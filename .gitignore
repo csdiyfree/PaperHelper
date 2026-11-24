@@ -1,0 +1,13 @@
+# personal data — never commit
+config.json
+library/
+work/
+logs/
+run/
+.claude/
+
+# misc
+__pycache__/
+*.pyc
+.DS_Store
+.venv/

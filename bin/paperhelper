@@ -1,0 +1,429 @@
+#!/usr/bin/env python3
+"""PaperHelper CLI — see ~/PaperHelper/DESIGN.md.
+
+Env overrides: PAPERHELPER_HOME, PAPERHELPER_PORT (same as server.py),
+PAPERHELPER_NO_BROWSER=1 makes `open` print the URL instead of launching a browser.
+"""
+
+import argparse
+import datetime
+import importlib.util
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+
+BIN_DIR = os.path.dirname(os.path.realpath(__file__))
+SERVER = os.path.join(os.path.dirname(BIN_DIR), "app", "server.py")
+
+
+def _load_core():
+    sys.dont_write_bytecode = True  # keep app/ free of __pycache__
+    spec = importlib.util.spec_from_file_location("paperhelper_server", SERVER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+core = _load_core()
+HOME, LIB, PORT = core.HOME, core.LIB, core.PORT
+BASE_URL = f"http://127.0.0.1:{PORT}/"
+START_TIMEOUT = 8.0
+ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def die(msg, code=1):
+    print(f"paperhelper: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+# ---------------------------------------------------------------------------
+# server process management
+# ---------------------------------------------------------------------------
+
+_local = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def ping(timeout=0.5):
+    try:
+        with _local.open(BASE_URL + "api/ping", timeout=timeout) as r:
+            return json.load(r).get("ok") is True
+    except Exception:
+        return False
+
+
+def read_pid():
+    try:
+        with open(core.PID_PATH) as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def remove_pid():
+    try:
+        os.unlink(core.PID_PATH)
+    except FileNotFoundError:
+        pass
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def is_our_server(pid):
+    try:
+        out = subprocess.run(["ps", "-p", str(pid), "-o", "command="],
+                             capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return False
+    return out.strip().endswith(SERVER)  # launched as `<python> -u <SERVER>`
+
+
+def log_tail(n=6):
+    try:
+        with open(core.LOG_PATH, encoding="utf-8", errors="replace") as f:
+            return "".join(f.readlines()[-n:])
+    except OSError:
+        return ""
+
+
+def wait_for_ping(proc=None, timeout=START_TIMEOUT):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if ping():
+            return True
+        if proc is not None and proc.poll() is not None:
+            return False
+        time.sleep(0.1)
+    return ping()
+
+
+def cmd_start(_args=None):
+    if ping():
+        print(f"PaperHelper 已在运行：{BASE_URL}")
+        return 0
+    pid = read_pid()
+    if pid and alive(pid) and is_our_server(pid):
+        # started earlier and still booting
+        if wait_for_ping():
+            print(f"PaperHelper 已在运行：{BASE_URL}")
+            return 0
+        die(f"进程 {pid} 在运行但 {START_TIMEOUT:.0f} 秒内没有响应 /api/ping，见 {core.LOG_PATH}")
+    remove_pid()
+    os.makedirs(core.LOG_DIR, exist_ok=True)
+    os.makedirs(core.RUN_DIR, exist_ok=True)
+    with open(core.LOG_PATH, "ab") as log:
+        proc = subprocess.Popen(
+            [sys.executable, "-u", SERVER],
+            stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+            start_new_session=True, close_fds=True, cwd=HOME if os.path.isdir(HOME) else "/",
+            env=os.environ.copy())
+    with open(core.PID_PATH, "w") as f:
+        f.write(f"{proc.pid}\n")
+    if wait_for_ping(proc):
+        print(f"PaperHelper 已启动：{BASE_URL}（pid {proc.pid}）")
+        return 0
+    if proc.poll() is not None:
+        remove_pid()
+        tail = log_tail()
+        die(f"服务启动失败（退出码 {proc.returncode}），日志 {core.LOG_PATH}：\n{tail}")
+    die(f"服务 {START_TIMEOUT:.0f} 秒内没有响应 /api/ping（pid {proc.pid}），见 {core.LOG_PATH}")
+
+
+def cmd_stop(_args=None):
+    pid = read_pid()
+    if pid is None:
+        if ping():
+            die(f"{BASE_URL} 有服务在运行，但没有 pid 文件（可能是前台 serve 启动的），无法停止")
+        print("PaperHelper 没有在运行")
+        return 0
+    if not alive(pid):
+        remove_pid()
+        print("PaperHelper 没有在运行（已清理过期的 pid 文件）")
+        return 0
+    if not is_our_server(pid):
+        remove_pid()
+        die(f"pid 文件里的进程 {pid} 不是 PaperHelper，已删除 pid 文件")
+    os.kill(pid, signal.SIGTERM)
+    deadline = time.time() + 5
+    while time.time() < deadline and alive(pid):
+        time.sleep(0.1)
+    if alive(pid):
+        os.kill(pid, signal.SIGKILL)
+        time.sleep(0.2)
+    remove_pid()
+    print(f"PaperHelper 已停止（pid {pid}）")
+    return 0
+
+
+def cmd_serve(_args=None):
+    os.execv(sys.executable, [sys.executable, "-u", SERVER])
+
+
+def cmd_open(args):
+    url = BASE_URL
+    if args.id:
+        p = core.find_paper(args.id)
+        if p is None:
+            die(f"找不到论文 {args.id}")
+        modes = p.modes()
+        mode = "zh" if "zh" in modes or not modes else modes[0]
+        url = f"{BASE_URL}#/paper/{p.id}/{mode}"
+    cmd_start()
+    if os.environ.get("PAPERHELPER_NO_BROWSER") == "1":
+        print(f"PAPERHELPER_NO_BROWSER=1，不打开浏览器：open {url}")
+        return 0
+    # Chrome's app mode gives a standalone window (no tabs / address bar), so
+    # PaperHelper feels like its own app; fall back to the default browser.
+    chrome = "/Applications/Google Chrome.app"
+    if os.path.isdir(chrome):
+        subprocess.run(["open", "-na", chrome, "--args", f"--app={url}"], check=False)
+    else:
+        subprocess.run(["open", url], check=False)
+    print(url)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# library queries
+# ---------------------------------------------------------------------------
+
+def cmd_categories(_args=None):
+    cats = core.scan_library()["categories"]
+    if not cats:
+        print("（还没有分类）", file=sys.stderr)
+    for c in cats:
+        print(f"{c['name']}  {c['count']}")
+    return 0
+
+
+def cmd_list(_args=None):
+    papers = sorted(core.scan_library()["papers"], key=lambda p: (p["category"], p["id"]))
+    for p in papers:
+        print(f"{p['id']}  {p['category']}  {p['title_zh']}")
+    return 0
+
+
+def cmd_path(args):
+    p = core.find_paper(args.id)
+    if p is None:
+        die(f"找不到论文 {args.id}")
+    print(p.dir)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# ingest
+# ---------------------------------------------------------------------------
+
+LATEX_JUNK = (".aux", ".log", ".out", ".synctex.gz")
+
+
+def _latex_ignore(root):
+    root = os.path.abspath(root)
+
+    def ignore(d, names):
+        top = os.path.abspath(d) == root
+        skip = set()
+        for n in names:
+            low = n.lower()
+            if low.endswith(LATEX_JUNK) or (top and low.endswith(".pdf")):
+                skip.add(n)
+        return skip
+    return ignore
+
+
+def extract_text(fitz, pdf, out_path):
+    doc = fitz.open(pdf)
+    try:
+        n = doc.page_count
+        with open(out_path, "w", encoding="utf-8") as f:
+            for i, page in enumerate(doc, 1):
+                text = page.get_text("text").strip("\n")
+                f.write(f"=== 第 {i} 页 ===\n{text}\n\n")
+        return n
+    finally:
+        doc.close()
+
+
+def _need_file(flag, path):
+    if path is None:
+        return None
+    path = os.path.abspath(os.path.expanduser(path))
+    if not os.path.isfile(path):
+        die(f"{flag} 文件不存在：{path}")
+    return path
+
+
+def cmd_ingest(a):
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:
+        die(f"ingest 需要 PyMuPDF（fitz），当前解释器 {sys.executable} 没有。"
+            f"安装：{sys.executable} -m pip install PyMuPDF")
+
+    pid = a.id
+    if not ID_RE.match(pid) or not core.valid_id(pid):
+        die(f"id 不合法：{pid!r}（应为 ASCII slug，如 vaswani2017-attention）")
+    try:
+        cat = core.clean_category(a.category)
+    except core.ApiError as e:
+        die(e.message)
+    original = _need_file("--original", a.original)
+    zh = _need_file("--zh", a.zh)
+    bilingual = _need_file("--bilingual", a.bilingual)
+    latex = None
+    if a.latex:
+        latex = os.path.abspath(os.path.expanduser(a.latex))
+        if not os.path.isdir(latex):
+            die(f"--latex 目录不存在：{latex}")
+
+    for flag, path in (("--original", original), ("--zh", zh), ("--bilingual", bilingual)):
+        if path:
+            try:
+                doc = fitz.open(path)
+                ok = doc.is_pdf and doc.page_count > 0
+                doc.close()
+            except Exception as e:
+                die(f"{flag} 不是可读的 PDF：{path}（{e}）")
+            if not ok:
+                die(f"{flag} 不是 PDF：{path}")
+
+    os.makedirs(LIB, exist_ok=True)
+    existing = [os.path.join(LIB, c, pid) for c in core.list_category_names()
+                if os.path.lexists(os.path.join(LIB, c, pid))]
+    if existing and not a.replace:
+        die(f"id {pid} 已存在：{existing[0]}（要覆盖请加 --replace，会保留 notes.md）")
+
+    cat_dir = os.path.join(LIB, cat)
+    new_cat = not os.path.isdir(cat_dir)
+    os.makedirs(cat_dir, exist_ok=True)
+    final = os.path.join(cat_dir, pid)
+    stage = tempfile.mkdtemp(prefix=f".{pid}.ingest-", dir=cat_dir)
+    trash = []
+    try:
+        os.chmod(stage, 0o755)
+        shutil.copyfile(original, os.path.join(stage, "original.pdf"))
+        if zh:
+            shutil.copyfile(zh, os.path.join(stage, "zh.pdf"))
+        if bilingual:
+            shutil.copyfile(bilingual, os.path.join(stage, "bilingual.pdf"))
+        if latex:
+            shutil.copytree(latex, os.path.join(stage, "latex"), ignore=_latex_ignore(latex),
+                            copy_function=shutil.copyfile)
+            for dirpath, _, _ in os.walk(os.path.join(stage, "latex")):
+                os.chmod(dirpath, os.stat(dirpath).st_mode | 0o700)  # copystat may copy read-only dirs
+        os.makedirs(os.path.join(stage, "text"))
+        try:
+            pages = extract_text(fitz, original, os.path.join(stage, "text", "original.txt"))
+            if zh:
+                extract_text(fitz, zh, os.path.join(stage, "text", "zh.txt"))
+        except Exception as e:
+            raise RuntimeError(f"提取文本失败：{e}")
+
+        meta = {
+            "id": pid,
+            "title_zh": a.title_zh,
+            "title_en": a.title_en,
+            "authors": a.authors,
+            "venue": a.venue,
+            "year": a.year,
+            "pages": pages,
+            "added": datetime.date.today().isoformat(),
+        }
+        if a.abstract_zh:
+            meta["abstract_zh"] = a.abstract_zh
+        if a.keywords:
+            kws = [k.strip() for k in re.split(r"[,，、]", a.keywords) if k.strip()]
+            if kws:
+                meta["keywords"] = kws
+        with open(os.path.join(stage, "meta.json"), "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+
+        old_notes = next((os.path.join(d, "notes.md") for d in existing
+                          if os.path.isfile(os.path.join(d, "notes.md"))), None)
+        if old_notes:
+            shutil.copyfile(old_notes, os.path.join(stage, "notes.md"))
+        else:
+            open(os.path.join(stage, "notes.md"), "w").close()
+
+        # swap: park the old folder(s), move the staged one in, then delete the old
+        for d in existing:
+            t = os.path.join(os.path.dirname(d), f".{pid}.old-{int(time.time() * 1000)}")
+            os.rename(d, t)
+            trash.append((t, d))
+        os.rename(stage, final)
+    except BaseException as e:
+        shutil.rmtree(stage, ignore_errors=True)
+        for t, d in trash:  # put the old folder(s) back
+            if not os.path.exists(d):
+                os.rename(t, d)
+        if new_cat:
+            try:
+                os.rmdir(cat_dir)  # don't leave an empty category behind
+            except OSError:
+                pass
+        if isinstance(e, (KeyboardInterrupt, SystemExit)):
+            raise
+        die(str(e))
+    for t, _ in trash:
+        shutil.rmtree(t, ignore_errors=True)
+    print(final)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="paperhelper", description="PaperHelper 本地论文库")
+    sub = ap.add_subparsers(dest="cmd", required=True, metavar="command")
+
+    sub.add_parser("serve", help="在前台运行服务").set_defaults(fn=cmd_serve)
+    sub.add_parser("start", help="后台启动服务（已运行则跳过）").set_defaults(fn=cmd_start)
+    sub.add_parser("stop", help="停止后台服务").set_defaults(fn=cmd_stop)
+    p = sub.add_parser("open", help="启动服务并在浏览器打开（可指定论文 id）")
+    p.add_argument("id", nargs="?")
+    p.set_defaults(fn=cmd_open)
+    sub.add_parser("categories", help="列出分类和篇数").set_defaults(fn=cmd_categories)
+    sub.add_parser("list", help="列出论文：id  分类  中文标题").set_defaults(fn=cmd_list)
+    p = sub.add_parser("path", help="打印论文文件夹路径")
+    p.add_argument("id")
+    p.set_defaults(fn=cmd_path)
+
+    p = sub.add_parser("ingest", help="把一篇论文放进库里")
+    p.add_argument("--id", required=True)
+    p.add_argument("--category", required=True)
+    p.add_argument("--original", required=True)
+    p.add_argument("--zh")
+    p.add_argument("--bilingual")
+    p.add_argument("--latex")
+    p.add_argument("--title-zh", required=True)
+    p.add_argument("--title-en", required=True)
+    p.add_argument("--authors", required=True)
+    p.add_argument("--venue", required=True)
+    p.add_argument("--year", required=True, type=int)
+    p.add_argument("--abstract-zh")
+    p.add_argument("--keywords")
+    p.add_argument("--replace", action="store_true")
+    p.set_defaults(fn=cmd_ingest)
+
+    args = ap.parse_args(argv)
+    return args.fn(args) or 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

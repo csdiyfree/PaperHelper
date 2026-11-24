@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PaperHelper</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="vendor/pdf_viewer.css">
+<link rel="stylesheet" href="app.css">
+<script src="vendor/marked.min.js"></script>
+</head>
+<body>
+<div class="app" id="app">
+
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-mark"></span>PaperHelper</div>
+    <button class="search-trigger" id="openPalette">
+      <span class="lbl">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.8"/><path d="M10.6 10.6 14 14" stroke-linecap="round"/></svg>
+        搜索或提问
+      </span>
+      <kbd>⌘K</kbd>
+    </button>
+    <nav class="nav">
+      <button class="nav-item active" data-cat="">全部论文 <span class="count" id="countAll"></span></button>
+      <div class="nav-label">分类 · AI 自动归档</div>
+      <div id="catList"></div>
+    </nav>
+    <div class="sidebar-foot">
+      <div>论文保存在<br><code id="libRoot">~/PaperHelper/library</code></div>
+      <button class="icon-btn" id="settingsBtn" title="设置 (⌘,)">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v1.6M8 12.6v1.6M14.2 8h-1.6M3.4 8H1.8M12.4 3.6l-1.1 1.1M4.7 11.3l-1.1 1.1M12.4 12.4l-1.1-1.1M4.7 4.7 3.6 3.6" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+  </aside>
+
+  <main class="main" id="main">
+    <!-- library -->
+    <section class="view" id="libraryView">
+      <header class="lib-head">
+        <div>
+          <h1 id="libTitle">全部论文</h1>
+          <p class="sub" id="libSub"></p>
+        </div>
+        <button class="pill-btn" id="libAiBtn">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.5 9.4 6.6 14.5 8 9.4 9.4 8 14.5 6.6 9.4 1.5 8 6.6 6.6Z"/></svg>
+          论文库助手
+        </button>
+      </header>
+      <div class="lib-scroll"><div class="paper-list" id="paperList"></div></div>
+    </section>
+
+    <!-- reader -->
+    <section class="view" id="readerView" hidden>
+      <header class="reader-bar">
+        <button class="icon-btn" id="backBtn" title="返回论文库 (Esc)">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3 5 8l5 5"/></svg>
+        </button>
+        <div class="reader-title"><div class="t-zh" id="rTitleZh"></div><div class="t-en" id="rTitleEn"></div></div>
+        <div class="seg" id="modeSeg">
+          <span class="seg-ind"></span>
+          <button data-mode="zh">中文</button>
+          <button data-mode="bilingual">对照</button>
+          <button data-mode="original">原文</button>
+        </div>
+        <div class="page-ind" id="pageInd"></div>
+        <button class="icon-btn" id="panelBtn" title="笔记与 AI (⌘J)">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2.5" width="12" height="11" rx="2"/><path d="M10 2.5v11"/></svg>
+        </button>
+      </header>
+      <div class="pdf-scroll" id="pdfScroll">
+        <div class="pdf-pages" id="pdfPages"></div>
+      </div>
+    </section>
+    <div class="sel-pop" id="selPop" hidden>
+      <button data-act="excerpt">摘录到笔记</button>
+      <button data-act="ask">问 AI</button>
+    </div>
+  </main>
+
+  <aside class="panel" id="panel">
+    <div class="panel-head" id="panelHead">
+      <button class="tab-btn" data-tab="notes">笔记</button>
+      <button class="tab-btn" data-tab="ai">AI</button>
+      <span class="panel-title" id="panelTitle" hidden>论文库助手</span>
+      <span class="spacer"></span>
+      <button class="icon-btn" id="newChat" title="新对话" hidden>
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg>
+      </button>
+      <button class="icon-btn" id="panelClose" title="收起 (⌘J)">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>
+      </button>
+      <span class="tab-ind" id="tabInd"></span>
+    </div>
+
+    <div class="tab-pane" id="notesPane">
+      <div class="notes-bar">
+        <span class="save-state" id="saveState">已保存</span>
+        <button class="pill-btn" id="notesMode">编辑</button>
+      </div>
+      <div class="notes-body" id="notesBody">
+        <div class="md" id="mdView"></div>
+        <textarea class="md-edit" id="mdEdit" spellcheck="false" hidden></textarea>
+      </div>
+    </div>
+
+    <div class="tab-pane" id="aiPane" hidden>
+      <div class="chat" id="chat"></div>
+      <div class="suggest" id="suggest"></div>
+      <div class="scope" id="scope"></div>
+      <form class="composer" id="composer">
+        <textarea id="ask" rows="1" placeholder="问点什么…"></textarea>
+        <button class="send" id="sendBtn" disabled>
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5"/></svg>
+        </button>
+      </form>
+    </div>
+  </aside>
+</div>
+
+<div id="paletteRoot"></div>
+<div id="modalRoot"></div>
+<div id="toastRoot"></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

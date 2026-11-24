@@ -1,0 +1,63 @@
+% !TEX program = xelatex
+% =========================================================
+%  中英对照版入口 -- pdf-to-chinese-latex skill
+%
+%  本文件不含正文。它在加载 main.tex 之前定义一套“对照版”宏，
+%  于是同一份 main.tex 编译出两个版本：
+%     xelatex main.tex            -> main.pdf            纯中文译文
+%     xelatex main_bilingual.tex  -> main_bilingual.pdf  上原文、下译文
+%  main.tex 里用 \providecommand 定义的是纯中文版宏；因为这里先定义，
+%  那些 \providecommand 不会覆盖这里的版本。
+%
+%  宏一览（正文写法见 SKILL.md Step 5）：
+%     \bipar{原文段落}{中文段落}          正文段落（含摘要、公式前后的段落片段）
+%     \bisection{原文}{中文}              编号章节标题（另有 \bisubsection / \bisubsubsection）
+%     \bihead{原文}{中文}                 短标题：论文标题、表/算法标题、\section* 标题
+%     \biitem{原文}{中文}                 列表项（代替 \item）
+%     \bifoot{原文}{中文}                 脚注（代替 \footnote；只写在中文那一半里）
+%     \bithanks{原文}{中文}               标题区作者脚注（代替 \thanks）
+%  “摘要”“参考文献”两个标题由本文件自动配上 Abstract / References。
+%
+%  Overleaf：Menu -> Main document 选 main_bilingual.tex 即可编译对照版。
+%  不要在本文件里写正文——正文只在 main.tex 里维护一份。
+% =========================================================
+
+% 原文一侧的颜色（深灰），与中文译文区分
+\DeclareRobustCommand{\bisrcstyle}{\color[gray]{0.35}}
+
+% 段落：原文一段、译文一段，两段都不缩进、尽量不分页拆开，每组之间留空
+\newcommand{\bipar}[2]{\par\addvspace{0.7em}{\noindent\bisrcstyle #1\par}\nopagebreak\noindent #2}
+
+% 短标题：原文一行（灰）、译文一行；PDF 书签只用中文
+\DeclareRobustCommand{\bihead}[2]{\texorpdfstring{{\bisrcstyle #1}\\*#2}{#2}}
+
+% 编号章节：页眉 / 目录 / 书签只用中文，正文标题上原文下中文
+\newcommand{\bisection}[2]{\section[#2]{{\bisrcstyle #1}\\*#2}}
+\newcommand{\bisubsection}[2]{\subsection[#2]{{\bisrcstyle #1}\\*#2}}
+\newcommand{\bisubsubsection}[2]{\subsubsection[#2]{{\bisrcstyle #1}\\*#2}}
+
+% 列表项与脚注
+\newcommand{\biitem}[2]{\item{\bisrcstyle #1\par}\nopagebreak #2}
+\newcommand{\bifoot}[2]{\footnote{{\bisrcstyle #1}\par #2}}
+\newcommand{\bithanks}[2]{\thanks{{\bisrcstyle #1}\par #2}}
+
+\makeatletter
+\AddToHook{begindocument/end}{%
+  % “摘要”“参考文献”标题配原文；页眉仍只用中文
+  \let\bi@zhabstractname\abstractname
+  \let\bi@zhrefname\refname
+  \renewcommand{\abstractname}{{\bisrcstyle Abstract}\\*\bi@zhabstractname}%
+  \renewcommand{\refname}{{\bisrcstyle References}\\*\bi@zhrefname}%
+  % 对照版正文约为译文版两倍长，放宽浮动体参数，减少只放一张图的半空页
+  \renewcommand{\topfraction}{0.9}%
+  \renewcommand{\bottomfraction}{0.8}%
+  \renewcommand{\textfraction}{0.07}%
+  \renewcommand{\floatpagefraction}{0.8}%
+  \setcounter{topnumber}{3}%
+  \setcounter{totalnumber}{4}%
+}
+\def\bi@refmarks#1#2{\markboth{\bi@zhrefname}{\bi@zhrefname}}
+\AddToHook{env/thebibliography/begin}{\let\@mkboth\bi@refmarks}
+\makeatother
+
+\input{main}

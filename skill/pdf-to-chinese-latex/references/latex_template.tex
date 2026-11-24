@@ -1,0 +1,201 @@
+% !TEX program = xelatex
+% =========================================================
+%  中文译稿模板 -- pdf-to-chinese-latex skill
+%
+%  使用方法：
+%   1. 把所有 <...> 占位符替换为译稿内容；
+%   2. 在 images/ 目录下放置 fig1.png, fig2.png, ... ；
+%   3. Overleaf 编译方式：Menu -> Compiler 选 XeLaTeX -> Recompile。
+%   4. 中英对照版：同目录放 main_bilingual.tex（skill 的 references/ 里有），
+%      编译它即得“上原文下中文”的 main_bilingual.pdf；正文只在本文件维护。
+%
+%  本模板预加载的包足以支撑大部分学术论文：
+%   - ctex          中文支持（XeLaTeX）
+%   - amsmath/amssymb/amsthm  公式
+%   - graphicx + booktabs + tabularx + longtable + multirow  图与表
+%   - algorithm + algpseudocode  算法伪代码
+%   - hyperref + url  超链接
+%   - enumitem    自定义列表
+% =========================================================
+\documentclass[a4paper,11pt]{article}
+
+\usepackage[UTF8,heading=true]{ctex}
+\usepackage[a4paper,margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{caption}
+\usepackage{enumitem}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{xcolor}
+\usepackage[hidelinks,colorlinks=false]{hyperref}
+\usepackage{url}
+\usepackage{tabularx}
+\usepackage{multirow}
+\usepackage{float}        % provides the [H] specifier to FORCE a figure
+                          % into position (no floating). Use only when a
+                          % regular [!htbp] still defers the figure.
+
+\graphicspath{{images/}}  % so \includegraphics{fig1.png} resolves to images/fig1.png
+
+% --- Figure inclusion convention (read before pasting figures) -----------
+% Default to [!htbp] placement and pick width from the PNG's aspect ratio:
+%
+%   aspect ≥ 2.5  → \includegraphics[width=0.85\textwidth]{figN.png}  (very wide banner)
+%   1.5 ≤ < 2.5   → \includegraphics[width=0.75\textwidth]{figN.png}  (standard landscape)
+%   0.9 ≤ < 1.5   → \includegraphics[width=0.65\textwidth]{figN.png}  (square-ish)
+%   < 0.9         → \includegraphics[width=0.55\textwidth]{figN.png}  (portrait)
+%
+% render_figures.py emits an `_figure_includes.tex` sidecar with these
+% widths already filled in for every extracted figure — paste from there.
+% -------------------------------------------------------------------------
+
+\graphicspath{{images/}}
+\captionsetup{font=small,labelfont=bf}
+\setlength{\parskip}{0.4em}
+
+% --- 中英对照宏（纯中文版定义）-------------------------------------------
+% 正文的每个段落 / 标题 / 列表项 / 脚注都同时写原文和译文：
+%   \bipar{原文}{中文}  \bisection{原文}{中文}  \bihead{原文}{中文}
+%   \biitem{原文}{中文} \bifoot{原文}{中文}
+% 编译 main.tex 时下面的定义生效，只排中文（= 普通译文版 main.pdf）。
+% 编译 main_bilingual.tex 时，它预先定义了“上原文下中文”的版本，
+% 这里的 \providecommand 不会覆盖它（-> main_bilingual.pdf）。
+% 所以原文一侧也必须是合法 LaTeX：% & # _ $ 要转义，数学写成 $...$。
+\providecommand{\bipar}[2]{#2}
+\providecommand{\bihead}[2]{#2}
+\providecommand{\bisection}[2]{\section{#2}}
+\providecommand{\bisubsection}[2]{\subsection{#2}}
+\providecommand{\bisubsubsection}[2]{\subsubsection{#2}}
+\providecommand{\biitem}[2]{\item #2}
+\providecommand{\bifoot}[2]{\footnote{#2}}
+\providecommand{\bithanks}[2]{\thanks{#2}}
+% “摘要”“参考文献”标题不用手动改：对照版入口会自动配上 Abstract / References。
+% -------------------------------------------------------------------------
+
+% 自定义环境
+\newtheorem{definition}{定义}
+\newtheorem{assumption}{假设}
+\newtheorem{theorem}{定理}
+\newtheorem{lemma}{引理}
+\newtheorem{proposition}{命题}
+
+\title{\bfseries \bihead{<原文标题>}{<中文标题>}}
+% 作者脚注（贡献说明、“工作完成于…”等）用 \bithanks{<原文>}{<中文>}，不要用 \bifoot
+\author{<罗马字作者 1>\bithanks{<原文作者脚注>}{<中文作者脚注>}\quad <罗马字作者 2>\\[2pt]
+\small\itshape <作者机构 1>\\
+\small\itshape <作者机构 2>\\
+\small 通讯作者邮箱：\href{mailto:<email>}{<email>}}
+\date{原文发表于 \emph{<期刊全名>}，<年份>，第 <卷> 卷 第 <期> 期，pp.\ <起>--<止>\\
+\small DOI:\ \href{<DOI URL>}{<DOI>}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+% \noindent 写在中文那一半里面（写在 \bipar 前面会在对照版里多出一个空行）
+\bipar{<原文摘要>}{\noindent <摘要正文翻译>}
+
+\bipar{\textbf{Keywords:} <keyword 1>; <keyword 2>; <keyword 3>}{\noindent\textbf{关键词：}<关键词 1>；<关键词 2>；<关键词 3>}
+\end{abstract}
+
+% =========================================================
+\bisection{Introduction}{引言}
+\label{sec:intro}
+
+% 每个原文段落对应一个 \bipar，段与段之间照常空一行。
+% 脚注只写在中文那一半里：\bifoot{<原文脚注>}{<中文脚注>}。
+\bipar{<引言第 1 段原文>}{<引言第 1 段译文>\bifoot{<原文脚注>}{<中文脚注>}}
+
+\bipar{<引言第 2 段原文>}{<引言第 2 段译文>}
+
+% =========================================================
+\bisection{<原文第二节标题>}{<第二节标题>}
+\label{sec:methods}
+
+\bipar{<原文段落>}{<正文翻译...>}
+
+% --- 公式示例 ---
+% 用 \label{eq:cN} 对应原文的 (N) 式，正文里用 \eqref{eq:cN} 引用。
+% 公式、表格内容、图片、算法、参考文献只写一份，不进 \bipar。
+\begin{equation}
+\label{eq:c1}
+\min z = \sum_{i=1}^{n} c_i x_i.
+\end{equation}
+
+% 被公式隔开的段落片段：公式前后各一个 \bipar，公式紧贴前一个片段（不空行）。
+\bipar{The constraints are given in Eq.~\eqref{eq:c2}:}{约束如式 \eqref{eq:c2} 所示：}
+\begin{equation}
+\label{eq:c2}
+\sum_{j=1}^{m} a_{ij} x_j \le b_i,\quad \forall i.
+\end{equation}
+
+% --- 图示例 ---
+% 裁出的 PNG 默认已含原文图题（Step 3.5），所以图题只写中文；
+% 若 PNG 不含原文图题，改用 \caption{\bihead{<原文图题>}{<中文图题>}}。
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.8\textwidth]{fig1.png}
+\caption{<图 1 的中文标题>}
+\label{fig:f1}
+\end{figure}
+
+% --- 表示例（用 tabularx + booktabs）---
+% 表格内容只写一份（中文表头）；表题用 \bihead 写原文 + 中文。
+\begin{table}[ht]
+\centering
+\caption{\bihead{<Table 1 original caption>}{<表 1 的中文标题>}}
+\label{tab:t1}
+\begin{tabularx}{0.85\textwidth}{c X r}
+\toprule
+参数 & 含义 & 数值 \\
+\midrule
+$\alpha$ & <含义说明> & 1.0 \\
+$\beta$  & <含义说明> & 0.5 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+% --- 算法示例 ---
+\begin{algorithm}[ht]
+\caption{\bihead{<Algorithm name>}{<算法名称>}}
+\label{alg:a1}
+\begin{algorithmic}[1]
+\State \textbf{输入：}<输入说明>
+\State \textbf{输出：}<输出说明>
+\For{$i=1$ to $n$}
+  \If{<条件>}
+    \State <操作>
+  \EndIf
+\EndFor
+\State \Return <返回值>
+\end{algorithmic}
+\end{algorithm}
+
+% =========================================================
+\bisection{Conclusion}{结论}
+\label{sec:conclusion}
+
+\bipar{<原文结论>}{<结论翻译...>}
+
+% 列表：每项用 \biitem 代替 \item
+\begin{itemize}
+\biitem{<原文要点 1>}{<要点 1 译文>}
+\biitem{<原文要点 2>}{<要点 2 译文>}
+\end{itemize}
+
+% 不编号的标题用 \section*{\bihead{...}{...}}
+\subsection*{\bihead{Acknowledgements}{致谢}}
+\bipar{<原文致谢>}{<致谢翻译...>}
+
+% =========================================================
+\begin{thebibliography}{99}
+\small
+\bibitem{Key1} <Author>, <Title>, <Journal>, <Year>. doi: <DOI>.
+\bibitem{Key2} <Author>, <Title>, <Journal>, <Year>. doi: <DOI>.
+\end{thebibliography}
+
+\end{document}
