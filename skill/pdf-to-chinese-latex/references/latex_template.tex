@@ -38,6 +38,19 @@
 \usepackage{float}        % provides the [H] specifier to FORCE a figure
                           % into position (no floating). Use only when a
                           % regular [!htbp] still defers the figure.
+\usepackage{flafter}      % a float never lands above the heading / text that precedes it
+
+% 西文里的 en dash（如 "Mistral 7B – Instruct"）按西文排，不当成中文标点吃掉两侧空格（中文破折号 —— 是 U+2014，不受影响）
+\xeCJKDeclareCharClass{Default}{"2013}
+% 放宽浮动体参数：一页可多放几张图表，避免只放一张图的半空浮动页
+\renewcommand{\topfraction}{0.9}
+\renewcommand{\bottomfraction}{0.8}
+\renewcommand{\textfraction}{0.07}
+\renewcommand{\floatpagefraction}{0.8}
+\setcounter{topnumber}{3}
+\setcounter{totalnumber}{4}
+% 中西文混排时允许多一点行间伸缩，减少 overfull 行（长英文术语、URL）
+\setlength{\emergencystretch}{2em}
 
 \graphicspath{{images/}}  % so \includegraphics{fig1.png} resolves to images/fig1.png
 
@@ -134,12 +147,13 @@
 \end{equation}
 
 % --- 图示例 ---
-% 裁出的 PNG 默认已含原文图题（Step 3.5），所以图题只写中文；
-% 若 PNG 不含原文图题，改用 \caption{\bihead{<原文图题>}{<中文图题>}}。
-\begin{figure}[ht]
+% 裁出的 PNG 只含图本身、不含原文图题（图题由 LaTeX 排），所以图题一律写成
+% \caption{\bihead{<原文图题>}{<中文图题>}}（原文图题去掉 "Figure N:" 编号）；
+% 图里有文字（标签、图例、坐标轴）时，中文一侧以“图中文字：…”结尾逐项给出译名。
+\begin{figure}[!htbp]
 \centering
-\includegraphics[width=0.8\textwidth]{fig1.png}
-\caption{<图 1 的中文标题>}
+\includegraphics[width=0.75\textwidth]{fig1.png}
+\caption{\bihead{<Figure 1 original caption>}{<图 1 的中文标题>。图中文字：<Label A> 标签 A；<Label B> 标签 B}}
 \label{fig:f1}
 \end{figure}
 

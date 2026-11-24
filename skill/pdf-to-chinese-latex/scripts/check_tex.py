@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Static-validate a LaTeX file before sending it to Overleaf.
 
-Checks:
+Checks (LaTeX comments are stripped first, honouring \\%):
     * \\begin{env} / \\end{env} balance per environment
     * \\cite{key} <-> \\bibitem{key} correspondence
     * \\ref / \\eqref <-> \\label correspondence
@@ -136,6 +136,29 @@ def expand_inputs(path: str, _seen: "set[str] | None" = None, _depth: int = 0) -
     return "".join(out)
 
 
+def strip_comments(txt: str) -> str:
+    """Remove LaTeX comments: from an unescaped `%` to the end of its line.
+
+    `\\%` is a literal percent sign; `\\\\%` is a line break followed by a
+    comment (an even run of backslashes does not escape the `%`). Newlines
+    are kept so reported line numbers still match the file.
+    """
+    out = []
+    for line in txt.split("\n"):
+        i = 0
+        while i < len(line):
+            c = line[i]
+            if c == "\\":
+                i += 2  # skip the escaped char (\%, \\, ...)
+                continue
+            if c == "%":
+                line = line[:i]
+                break
+            i += 1
+        out.append(line)
+    return "\n".join(out)
+
+
 def check(path: str) -> int:
     # Inline \input{}/\include{} so bibitems / labels / images defined in
     # split-out files are visible to the static checks below.
@@ -144,6 +167,8 @@ def check(path: str) -> int:
         # Fall back to raw read if expansion path failed
         with open(path, encoding="utf-8") as f:
             txt = f.read()
+    # A commented-out \includegraphics / \cite / \label must not count.
+    txt = strip_comments(txt)
 
     issues = 0
 

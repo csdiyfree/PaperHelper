@@ -78,10 +78,10 @@ Wiley 系刊物的推荐组合就是 `--side-margin 30 --top-margin 100`。Elsev
 
 ### 抽出来的图整张是横倒的（90° 转过来才看得懂）
 **原因：** 原 PDF 把横向的大图旋转 90° 塞进竖向的页面里（多面板对比图、宽网络示意图最常见）。PyMuPDF 按原页面坐标渲染，所以保留了原始旋转方向。
-**处理：** 新版 `render_figures.py` 会读取 clip 区域内 text span 的 `line.dir` 向量。如果 ≥60% 字符方向不是水平的，就自动反向旋转回正（用 Pillow，是 pdfplumber 的依赖之一，本来就装着）。如果检测器误判，手动 override：
+**处理：** 新版 `render_figures.py` 按**图题自身的文字方向**（`line.dir`）判断：横着塞进竖页的图，图题是跟图一起转的，于是按图题方向自动转回正（用 Pillow，是 pdfplumber 的依赖之一，本来就装着）；找不到图题（`|bbox=` 手动框）时才退回到对 clip 内文字方向投票（≥60%）。图里大量竖排文字（如注意力可视化的竖排词标签）而图题是横的 → 保持不转，并在汇总和 `_inspection.html` 里给出 `[NOTE]`。如果判断错了，手动 override：
 ```
 --figs "9:24:Fig. 9.|rotate=90"     # 强制 90° CW
---figs "9:24:Fig. 9.|rotate=0"      # 关闭自动旋转
+--figs "9:24:Fig. 9.|rotate=0"      # 强制不转（保持原样）
 ```
 rotate 只接 0 / 90 / 180 / 270。
 

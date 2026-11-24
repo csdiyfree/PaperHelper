@@ -11,7 +11,7 @@ Given one or more academic PDF papers in any source language, this skill produce
 
 - `main.tex` — full Chinese translation in a `ctex`-based LaTeX template, with all equations, tables, algorithms, and bibliography preserved and renumbered to mirror the original. Every paragraph / heading / list item / footnote is written as a source–Chinese pair (`\bipar{source}{中文}` etc., see Step 5).
 - `main_bilingual.tex` — a fixed 20-line wrapper (copied from `references/`) that `\input`s `main.tex` with different macro definitions, producing the **中英对照版**: each source paragraph on top, its Chinese translation directly below.
-- `images/` — figures cropped from the original PDF by caption-anchored rendering (works for both raster *and* vector figures).
+- `images/` — figures cropped from the original PDF by caption-anchored rendering (works for both raster *and* vector figures). Each crop is the figure only; its caption is typeset by LaTeX.
 - `raw.txt` — page-by-page text dump of the original, kept as the translator's reference.
 - `source.txt` — the same text extracted by PyMuPDF with word spacing intact and one block per paragraph; the source side of every `\bipar` is transcribed from here.
 - `README.md` — Overleaf compile instructions.
@@ -113,7 +113,7 @@ python scripts/extract_text.py "<pdf_path>" --out "<output_dir>/raw.txt"
 
 This writes one page per delimiter (`========== PAGE N ==========`). The model then *reads* `raw.txt` and uses it as the translation source. Don't try to translate directly from the PDF binary — the per-page text is much easier to align with figure pages, table positions, and reference numbering.
 
-The same command also writes `source.txt` next to `raw.txt` (PyMuPDF, one text block per line, blank line between blocks, the PDF's hard line wraps already joined). pdfplumber often drops the spaces between words on tightly kerned PDFs (`Recurrentneuralnetworks`); PyMuPDF keeps them. **Read and translate from `source.txt`** — it is also the text you transcribe into the source side of each `\bipar` (Step 5). `raw.txt` stays for `extract_bibliography.py`. `source.txt` is clean *prose*, not a finished source half:
+The same command also writes `source.txt` next to `raw.txt` (PyMuPDF, one text block per line, blank line between blocks, the PDF's hard line wraps already joined). pdfplumber often drops the spaces between words on tightly kerned PDFs (`Recurrentneuralnetworks`); PyMuPDF keeps them. **Read and translate from `source.txt`** — it is also the text you transcribe into the source side of each `\bipar` (Step 5) and the input of `extract_bibliography.py`. `raw.txt` stays as a second reference. `source.txt` is clean *prose*, not a finished source half:
 - a paragraph interrupted by a page break, figure or table comes out as two blocks — re-join them into one `\bipar`;
 - math is flattened or scrambled (`ht−1`, swapped dimensions, broken display equations) — always rewrite math from the PDF page, never from the text dump;
 - footnote markers, page numbers and running headers can be glued into the text — drop them;
@@ -126,7 +126,7 @@ Watch for:
 
 ### Step 3 — Render figures (skip if user chose ② or ③ in step 1)
 
-**Fastest path: `--auto`.** The script scans every page, picks the real caption per figure (density-based disambiguation), detects the actual image / drawing bbox (Voronoi-assigned per caption), auto-rotates landscape figures back to upright, and excludes publisher watermarks — all in one command:
+**Fastest path: `--auto`.** The script scans every page, picks the real caption per figure (`Figure N:` / `Fig. N.` / `图 N：` … that opens its line beats an in-text mention; density-based tie-break), detects the actual image / drawing bbox (Voronoi-assigned per caption) plus the figure's own labels around it, crops the figure **without its printed caption**, turns figures that were rotated together with their caption back upright, and excludes publisher watermarks — all in one command:
 
 ```bash
 python scripts/render_figures.py "<pdf>" --out "<output_dir>/images" --auto
@@ -145,10 +145,14 @@ python scripts/render_figures.py "<pdf>" --out images --auto \
     --figs "5:11:Figure 5.|bbox=50,200,540,560,9:24:Fig. 9.|rotate=90"
 ```
 
+Entries are separated by the comma that starts the next `N:page:` entry, so a bbox's own commas are fine; suffixes can be combined (`|bbox=…|rotate=90`).
+
+The exit summary prints `[WARN] figN: …` for every figure anchored only on a weak or in-text form (`Figure 2 ` without terminator, or a mention mid-sentence) — that crop is probably not the figure; fix it before going on. `[NOTE]` lines flag judgement calls such as rotation (below).
+
 **Two sidecars are written next to `images/`:**
 
 - `_figure_includes.tex` — paste-ready `\begin{figure}[!htbp]` blocks with aspect-aware `width=` (see Step 5 table). Closes the "huge figure floats to end of document" trap by default.
-- `_inspection.html` — see Step 3.5 for the visual checkpoint.
+- `_inspection.html` (+ its `_inspect_pNN.png` page renders, kept outside `images/` so they never reach the Overleaf zip) — see Step 3.5 for the visual checkpoint.
 
 **Algorithm details, failure modes, watermark-string list, and deeper troubleshooting** live in [`references/figure_extraction.md`](references/figure_extraction.md). Read it only when `_inspection.html` shows a figure was cropped wrong. For paper-version edge cases (two-column papers, subfigure caption splitting, scanned PDFs, GB/T 7714 Chinese refs), see [`references/troubleshooting.md`](references/troubleshooting.md).
 
@@ -158,10 +162,11 @@ The script also writes `_inspection.html` next to `images/` — open it in any b
 
 **Scan every row in under a minute** and check:
 
-1. Does the red box contain the entire figure, including all sub-panels, axis labels, legend, and figure caption?
-2. Is the extracted PNG oriented upright (not sideways or upside-down)?
+1. Does the red box contain the entire figure, including all sub-panels, axis labels and legend — but **not** the printed caption, nor body text / headings around it? (Captions are typeset by LaTeX in Step 5; one baked into the PNG would show twice.)
+2. Is the extracted PNG oriented upright (not sideways or upside-down)? Rotation follows the caption's text direction; a row with a yellow NOTE says the figure's own text disagrees (e.g. vertical word labels) — if that PNG is sideways, pass the `|rotate=N` the NOTE suggests; `|rotate=0` forces upright.
 3. For multi-figure pages, does each `figN` red box cover only its own figure and not bleed into neighbours?
 4. For Wiley / Elsevier papers, is the right-edge "Downloaded from..." watermark and the top page-header band excluded?
+5. Rows with a red WARN were anchored on a weak / in-text mention — check those first.
 
 `0 fallback to full page` in the script's exit summary does NOT guarantee correctness — the bbox / Voronoi / rotation heuristics can silently pick the wrong region on layouts they haven't seen before. This visual check is the hard checkpoint.
 
@@ -185,20 +190,20 @@ Replace the placeholders in `latex_template.tex` and fill in the body. **Write e
 |---|---|
 | body paragraph (also abstract, keywords line, acknowledgements) | `\bipar{<source paragraph>}{<中文段落>}` — one per source paragraph, blank line between, exactly like ordinary paragraphs |
 | numbered heading | `\bisection{<source>}{<中文>}` / `\bisubsection` / `\bisubsubsection`, then `\label{...}` |
-| unnumbered heading, paper title, table / algorithm caption | `\section*{\bihead{<source>}{<中文>}}`, `\title{\bfseries\bihead{..}{..}}`, `\caption{\bihead{..}{..}}` |
+| unnumbered heading, paper title, figure / table / algorithm caption | `\section*{\bihead{<source>}{<中文>}}`, `\title{\bfseries\bihead{..}{..}}`, `\caption{\bihead{..}{..}}` |
 | list item | `\biitem{<source>}{<中文>}` in place of `\item` |
-| footnote | `\bifoot{<source>}{<中文>}` in place of `\footnote`, placed **only inside the Chinese half** of the `\bipar` (otherwise the bilingual edition prints it twice) |
+| footnote | `\bifoot{<source>}{<中文>}` in place of `\footnote`, placed **only inside the Chinese half** of the `\bipar` (otherwise the bilingual edition prints it twice). A footnote that is only a URL (nothing to translate): plain `\footnote{\url{…}}` inside the Chinese half — `\bifoot` would print the URL twice |
 | author / title-block footnote (equal contribution, "work done while at …") | `\bithanks{<source>}{<中文>}` in place of `\thanks` — `\bifoot` does not work inside `\author` |
 | paragraph split by a display equation | one `\bipar` for the part before the equation, the equation right after it (no blank line), one `\bipar` for the part after |
 
-Written **once**, outside any pair: equations, figures, table bodies (Chinese headers), algorithms, the bibliography. Figure captions are plain Chinese `\caption{...}` because the cropped PNG already shows the original caption (Step 3.5); if a PNG does not include it, use `\caption{\bihead{<source>}{<中文>}}`. Words inside a display equation (`\text{where}`, `\text{if}`) are translated, since the equation appears once and both editions are read by a Chinese reader.
+Written **once**, outside any pair: equations, figures, table bodies (Chinese headers), algorithms, the bibliography. Figure captions are always `\caption{\bihead{<source caption>}{<中文图题>}}` — the PNG holds the figure only (Step 3.5); the source side is the caption text without its `Figure N:` label (LaTeX numbers it). When the figure contains text (labels, legend, axis titles), end the Chinese side with `图中文字：<原文> <译名>；…` so a Chinese reader can decode the figure. Words inside a display equation (`\text{where}`, `\text{if}`) are translated, since the equation appears once and both editions are read by a Chinese reader.
 
 Don't touch `\abstractname` / `\refname` — the bilingual wrapper pairs the 摘要 and 参考文献 headings with Abstract / References by itself and keeps the running header Chinese. Don't put `\noindent` (or anything else) in front of a `\bipar`; if the Chinese paragraph must not be indented, write `\bipar{...}{\noindent ...}` — a `\noindent` outside the pair leaves an empty line in the bilingual edition.
 
 **Source side = faithful transcription from `source.txt`, not a paraphrase.** Re-join hyphenated line breaks (`transduc-`/`tion` → `transduction`), write math as `$...$` exactly as in the Chinese half (`ht−1` → `$h_{t-1}$`), keep citations as `\cite{...}` / `[N]` the same way the Chinese half does, and escape LaTeX specials (`%` → `\%`, `&` → `\&`, `#` → `\#`, `_` → `\_` outside math). An unescaped `%` in the source half comments out the rest of the line — including the closing brace and the whole Chinese half — so it breaks *both* editions.
 
-- **Title / authors / affiliations**: translate the title, romanize author names (don't translate them), translate affiliations.
-- **Abstract + keywords**: translate as a single paragraph with a `\textbf{关键词：}...` line at the end.
+- **Title / authors / affiliations**: translate the title, romanize author names (don't translate them), translate affiliations. If the title is identical in both languages (e.g. a model name like `Mistral 7B`), use plain `\title{…}` without `\bihead`.
+- **Abstract + keywords**: translate as a single paragraph with a `\textbf{关键词：}...` line at the end. Omit the keywords line when the source has none.
 - **Body sections**: paragraph-by-paragraph translation. Keep the original section/subsection numbering (`\bisection`, `\bisubsection`). If the source uses (1), (2), ... for itemized lists, mirror with `enumerate[label=(\arabic*)]`.
 - **Equations**: every numbered equation in the source becomes a numbered equation in the translation, labeled `\label{eq:cN}` where N matches the source equation number. Use `\eqref{eq:cN}` in prose so the cross-references re-render correctly. Inline math stays in `$...$`.
   - **docx-safe multi-line math (do this from the start, not as a post-fix).** Inside `cases`/`aligned`/`array`, end rows with a bare `\\` — **never** `\\[4pt]` / `\\[10pt]`. The `\\[Npt]` row-spacing form is valid LaTeX (PDF compiles fine) but pandoc's math reader rejects it, so every such equation silently degrades to raw source in the Word export. A bare `\\` looks identical in the PDF and survives to docx. If you inherit a `.tex` that already uses `\\[Npt]`, fix it with: `python -c "import re,sys,io; p=sys.argv[1]; s=io.open(p,encoding='utf-8').read(); io.open(p,'w',encoding='utf-8').write(re.sub(r'\\\\\\\\\[\d+pt\]', r'\\\\\\\\', s))" "<output_dir>/main.tex"` then re-run `export_docx.py`.
@@ -208,8 +213,8 @@ Don't touch `\abstractname` / `\refname` — the bilingual wrapper pairs the 摘
   python scripts/extract_tables.py "<pdf_path>" --out "<output_dir>/_tables.tex"
   ```
 
-  Each table in the PDF is emitted as a paste-ready `\begin{table}[!htbp]` block with `tabularx + booktabs`, column types inferred from cell content (`l` for label cols, `r` for numeric). Paste blocks into `main.tex` where needed, fill in `\caption{...}` and translate header cells. Two real-world rough edges to fix manually: (a) text-strategy may over-extract (pulls an itemized paragraph as a "table") — just delete those blocks; (b) cells containing `[1.516, 2.775]` may split at the comma — merge the affected columns. Still ~30× faster than rebuilding by hand. For very large landscape tables (5+ columns × 20+ rows), prefer prose summary + page-number pointer to the source — don't burn a day on a table no one will read.
-- **Figures**: paste from `<output_dir>/_figure_includes.tex` (auto-generated in step 3) into `main.tex` where the figure should appear, then fill in `\caption{...}` and `\label{fig:...}`. The sidecar already picked `\includegraphics` widths from each PNG's aspect ratio:
+  Each table in the PDF is emitted as a paste-ready `\begin{table}[!htbp]` block with `tabularx + booktabs`, column types inferred from cell content (`l` for label cols, `r` for numeric). Paste blocks into `main.tex` where needed, fill in `\caption{...}` and translate header cells. Two real-world rough edges to fix manually: (a) text-strategy may over-extract (pulls an itemized paragraph as a "table") — just delete those blocks; (b) cells containing `[1.516, 2.775]` may split at the comma — merge the affected columns. On booktabs tables without vertical rules (common in ML papers) it often finds nothing useful and emits false positives instead — then rebuild the table by hand from the PyMuPDF spans (`page.get_text("dict")`) and the page render; never paste junk. A table wider than the text block: wrap the tabular in `\resizebox{\textwidth}{!}{…}`. For very large landscape tables (5+ columns × 20+ rows), prefer prose summary + page-number pointer to the source — don't burn a day on a table no one will read.
+- **Figures**: paste from `<output_dir>/_figure_includes.tex` (auto-generated in step 3) into `main.tex` where the figure should appear, then fill in `\caption{\bihead{<source caption>}{<中文图题>}}` and `\label{fig:...}`. The sidecar already picked `\includegraphics` widths from each PNG's aspect ratio:
 
   | aspect (W/H) | width                | typical figure              |
   |---|---|---|
@@ -223,11 +228,11 @@ Don't touch `\abstractname` / `\refname` — the bilingual wrapper pairs the 摘
 - **References**: list every entry in `\begin{thebibliography}{99}`. Keep author/journal/title in **English** (translators searching for the original will need this); only translate fields like "Accessed: ..." or "访问于 ...". **Don't hand-transcribe** — let `extract_bibliography.py` build the skeleton for you:
 
   ```bash
-  python scripts/extract_bibliography.py "<output_dir>/raw.txt" \
+  python scripts/extract_bibliography.py "<output_dir>/source.txt" \
       --out "<output_dir>/_bib.tex"
   ```
 
-  Locates the References / Bibliography section, parses each entry by its `[N]` prefix (IEEE/Wiley style) or by `Surname, X.,` author-year start (Elsevier/OR style), and emits a ready-to-paste `\begin{thebibliography}` block. Paste it into `main.tex` and adjust line wrapping if pdfplumber lost any whitespace. Tested on 20-entry numbered (Tan2025) and 42-entry author-year (Liu2025) bibliographies.
+  Locates the References / Bibliography section, parses each entry by its `[N]` prefix (IEEE/Wiley style) or by `Surname, X.,` author-year start (Elsevier/OR style), drops page numbers at page breaks, stops where the references end (an Appendix heading, or a page with no further entries), and emits a ready-to-paste `\begin{thebibliography}` block. Check the entry count against the source's last reference number, then paste it into `main.tex`. (Given `raw.txt` it reads the `source.txt` next to it — pdfplumber loses word spaces.) Tested on numbered (Tan2025, Vaswani2017 40 entries + appendix, Mistral 29) and 42-entry author-year (Liu2025) bibliographies.
 - **Citations**: every `\cite{key}` in the prose must have a matching `\bibitem{key}` — see step 6 for the static check.
 
 The CTeX setup automatically handles Chinese fonts; you don't need to specify `\setCJKmainfont` manually.
@@ -262,7 +267,7 @@ Compress-Archive -Path <folder>/main.tex,<folder>/main_bilingual.tex,<folder>/im
                  -DestinationPath <folder>.zip -Force
 ```
 
-(On bash: `cd parent && zip -r <folder>.zip <folder>`.)
+(On bash: `cd <folder> && zip -r ../<folder>.zip main.tex main_bilingual.tex images README.md` — the same files; the `_inspect_*` / `_*.tex` sidecars and text dumps stay out.)
 
 End with a summary message that lists, per paper: the folder path, zip path, both PDF paths (`main.pdf`, `main_bilingual.pdf`), page count of source, number of equations/tables/figures preserved, and the **Overleaf upload steps**:
 
@@ -334,8 +339,8 @@ These hold regardless of source language or paper length:
 ## Common pitfalls and how to handle them
 
 - **Pypdf images come out as decorations**: publisher logos, ORCID icons, journal banners get extracted as p01_0.jpg / p01_1.png etc. Don't bother filtering them — the figure rendering pipeline (step 3) doesn't use them. They're harmless leftovers.
-- **PyMuPDF caption search fails**: the script tries `Fig. N.` / `Figure N.` / `FIGURE N` / `Abb. N.` automatically, so capitalization is usually a non-issue. If it still falls back to full page, the figure caption is probably wrapped weirdly (line-break mid-keyword) — hand-specify with `|bbox=x0,y0,x1,y1` after the keyword in `--figs`.
-- **Cropped image is the WRONG region (got body text instead of figure)**: an in-text reference like "see Figure 5" appeared higher on the page than the actual caption, and an older version of the script picked it. The current version picks the lowest hit, but verify by opening the rendered PNG. If wrong, pass `|bbox=...` to lock the rect.
+- **PyMuPDF caption search fails**: the script tries `Fig. N.` / `Figure N.` / `Figure N:` / `FIGURE N` / `Abb. N.` / `图 N：` automatically, so capitalization and colon-vs-period are usually a non-issue. If it still falls back to full page, the figure caption is probably wrapped weirdly (line-break mid-keyword) — hand-specify with `|bbox=x0,y0,x1,y1` after the keyword in `--figs`.
+- **Cropped image is the WRONG region (got body text instead of figure)**: the anchor was an in-text reference like "as illustrated in Figure 5." instead of the caption. The script prefers a hit that opens its line and prints `[WARN]` when it could only anchor on a weak / in-text form — fix the page/keyword in `--figs`, or pass `|bbox=...` to lock the rect.
 - **Figure has a Wiley/Elsevier download stamp baked in**: auto-watermark detection only fires when the watermark string sits within 80pt of a page edge. If it slipped through, add `--side-margin 30 --top-margin 100` to the command line.
 - **Bibliography keys collide across translated batches**: each paper gets its own `\begin{thebibliography}`, so keys are scoped to the file. Don't bother prefixing keys with paper IDs unless the user explicitly asks for a merged bibliography.
 - **Source uses non-standard equation numbering like (3.1)**: mirror with `eq:c3-1` or `eq:3-1`. The static check only cares about cite/label consistency, not the naming convention.
@@ -346,8 +351,8 @@ These hold regardless of source language or paper length:
 - `SKILL.md` — this file.
 - `scripts/extract_text.py` — per-page text dump: `raw.txt` (pdfplumber) + `source.txt` (PyMuPDF, spacing intact, one block per paragraph).
 - `scripts/render_figures.py` — PyMuPDF caption-anchored figure renderer (with `--auto` discovery + watermark exclusion).
-- `scripts/extract_bibliography.py` — turns the References section of `raw.txt` into a `\begin{thebibliography}` skeleton (handles numbered `[N]` and author-year `Surname, X.,` styles).
-- `scripts/check_tex.py` — static validator for `main.tex` (envs, cite/bibitem, ref/label, `$` parity, image-file existence + magic-byte check).
+- `scripts/extract_bibliography.py` — turns the References section of `source.txt` into a `\begin{thebibliography}` skeleton (handles numbered `[N]` and author-year `Surname, X.,` styles; stops before an appendix).
+- `scripts/check_tex.py` — static validator for `main.tex` (envs, cite/bibitem, ref/label, `$` parity, image-file existence + magic-byte check; comments ignored).
 - `scripts/compile_pdf.py` — local XeLaTeX compile → faithful `main.pdf`, plus `main_bilingual.pdf` when `main_bilingual.tex` is present (numbering intact).
 - `scripts/check_bilingual.py` — after compiling, checks every source/Chinese pair landed correctly in both PDFs (missing, leaked, duplicated).
 - `scripts/export_docx.py` — pandoc export → editable `main.docx` (equation cross-refs/numbering may be lost; PDF is the faithful copy).

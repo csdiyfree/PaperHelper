@@ -7,14 +7,20 @@ understand which knob to turn.
 ## The pipeline in one paragraph
 
 For each figure number N the script (a) locates a caption rect via keyword
-search + text-density disambiguation, (b) collects every raster XObject and
-every vector drawing ≥30pt on the same page as bbox candidates, (c) assigns
-each candidate to its nearest caption via a Voronoi-style rule, (d) takes
-the bbox union of all candidates owned by the current caption as the clip,
-(e) auto-detects whether the clip's text reads sideways and rotates the
-rendered PNG back to upright, and (f) auto-detects publisher watermarks
-near the page edges and shrinks the clip to exclude them. The final
-pixmap is rendered at 3× scale (≈216 DPI) and saved as `fig{N}.png`.
+search (`Figure N:` / `Fig. N.` / `图 N：` …; a hit that opens its text line
+beats an in-text mention, then text-density disambiguation), (b) collects
+every raster XObject and every vector drawing ≥30pt on the same page as bbox
+candidates, (c) assigns each candidate to its nearest caption via a
+Voronoi-style rule, (d) takes the bbox union of all candidates owned by the
+current caption, (e) grows it by the figure's own labels and thin strokes
+that touch it (within 6pt; toward the caption, everything up to the
+caption) — never prose, headings or captions — and stops short of the
+printed caption, which is NOT part of the crop, (f) rotates the PNG back to
+upright when the caption itself reads sideways, and (g) auto-detects
+publisher watermarks near the page edges and shrinks the clip to exclude
+them. The final pixmap is rendered at 3× scale (≈216 DPI) and saved as
+`fig{N}.png`. Figures anchored only on a weak / in-text form get a
+`[WARN]` line in the summary and a red banner in `_inspection.html`.
 
 ## Pitfall 1 — In-text reference vs real caption
 
@@ -22,11 +28,13 @@ pixmap is rendered at 3× scale (≈216 DPI) and saved as `fig{N}.png`.
 another figure's caption text, AND under the actual figure ("Figure 5.
 Route of Scenario 2"). Naive `search_for` returns all of them.
 
-The script disambiguates by **text density in the 100pt strip immediately
-above each candidate** — a real caption sits below an image (sparse /
-empty above), an in-text reference is embedded in body prose (dense
-above). The lowest-density candidate wins. This handles both common
-layouts correctly:
+The script first prefers a hit that **opens its text line** (`Figure 5: …`)
+over one inside a sentence (`… as shown in Figure 5.`), and strong forms
+(with `.` / `:` terminator) over weak ones. Among the rest it disambiguates
+by **text density in the 100pt strip immediately above each candidate** —
+a real caption sits below an image (sparse / empty above), an in-text
+reference is embedded in body prose (dense above). The lowest-density
+candidate wins. This handles both common layouts correctly:
 
 - Figure placed *after* its first text mention (Tan-style): real caption is
   the lowest hit on the page.
@@ -48,10 +56,15 @@ Large multi-panel comparisons and wide network diagrams are often rotated
 90° when embedded in a portrait journal page. Rendering the clip as-is
 leaves the figure sideways.
 
-The script reads `line.dir` from text spans inside the clip — if ≥60% of
-characters point a non-horizontal direction, the rendered PNG is
-auto-rotated back to upright (uses Pillow, a transitive pdfplumber
-dependency, so no extra install is required). Force or disable via per-fig
+A figure rotated onto a portrait page is rotated together with its
+caption, so the script reads `line.dir` of the **caption** and rotates the
+rendered PNG back to upright accordingly (uses Pillow, a transitive
+pdfplumber dependency, so no extra install is required). Only without a
+caption (a `|bbox=` override) does it vote over the text inside the clip
+(≥60% non-horizontal → rotate). When the figure's own text mostly reads
+sideways but its caption is upright — e.g. attention maps with vertical
+word labels — the figure is kept upright and a `[NOTE]` names the
+`|rotate=N` to use if it really is sideways. Force or disable via per-fig
 `|rotate=N` (N = 0/90/180/270 CW):
 
 ```
@@ -94,8 +107,9 @@ re-check the page number and try alternative keywords (`Figure 1.` vs
 `Fig. 1.`, with/without trailing period).
 
 The script automatically tries several common variants
-(`Fig. N.`, `Figure N.`, `FIGURE N`, `Abb. N.`), so a single keyword
-like `Fig. 1.` will still find a paper that uses `Figure 1.`.
+(`Fig. N.`, `Figure N.`, `Figure N:`, `FIGURE N`, `Abb. N.`, `图 N：`), so a
+single keyword like `Fig. 1.` will still find a paper that uses
+`Figure 1:`.
 
 ## When all heuristics fail: bbox override
 

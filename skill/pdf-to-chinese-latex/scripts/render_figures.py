@@ -2,27 +2,31 @@
 """Render figures from a PDF by caption-anchored cropping.
 
 For each (fig_num, page_index_1based, caption_keyword) tuple, locate the
-caption text on the page, then crop from "the previous caption's bottom
-(or the page top at 72pt) down through the current caption's bottom
-+ 8pt", and render the region as a PNG at 3x scale (~216 DPI).
+caption text on the page, find the figure content (images, vector
+drawings and the figure's own text labels) next to it, and render that
+region as a PNG at 3x scale (~216 DPI). The printed caption itself is
+NOT part of the crop — the translation typesets it with \\caption{}.
 
 Two robustness features versus the naive caption search:
 
-1. **Lowest-on-page wins**: when the keyword has multiple hits on the page
-   (very common: in-text reference "as shown in Figure 5" appears before
-   the actual figure caption "Figure 5. <description>"), the script picks
-   the match with the LARGEST y0 — i.e. lowest on the page — because
-   captions are typically below the figure, after any in-text refs.
+1. **Caption-shaped hit wins**: when the keyword has multiple hits (very
+   common: in-text reference "as shown in Figure 5." besides the actual
+   caption "Figure 5: <description>"), a hit that opens its text line
+   beats a mid-sentence one; ties go to the hit with the least text in
+   the strip above it (a caption sits under its figure, a mention sits
+   in prose). Anchors that only matched a weak / in-text form are
+   reported as WARN in the summary.
 
 2. **Watermark exclusion**: publisher download stamps (Wiley / Elsevier /
    IEEE) are detected by string search and the crop rect is shrunk to
    avoid intersecting them. The script also honours `--side-margin` and
    `--top-margin` CLI flags for manual override on stubborn PDFs.
 
-Per-figure manual bbox override is available with the suffix
-`|bbox=x0,y0,x1,y1` on a `--figs` entry, e.g.:
+Per-figure manual bbox / rotation overrides are available as suffixes
+on a `--figs` entry (entries are separated by the comma that starts the
+next `N:page:` entry, so a bbox's own commas are fine), e.g.:
 
-    --figs "5:13:Figure 5.|bbox=50,200,540,600"
+    --figs "5:13:Figure 5.|bbox=50,200,540,600,9:24:Fig. 9.|rotate=90"
 
 Usage:
     python render_figures.py input.pdf --out images_dir \
@@ -35,7 +39,9 @@ Requires: PyMuPDF (`pip install PyMuPDF`).
 import argparse
 import io
 import os
+import re
 import sys
+from html import escape as html_escape
 from typing import Dict, List, Optional, Tuple
 
 import fitz  # PyMuPDF
@@ -67,7 +73,9 @@ def parse_figs(
                             otherwise auto-detected from text direction
     """
     out = []
-    for chunk in spec.split(","):
+    # Split only at a comma that starts a new `N:page:` entry, so the commas
+    # inside `|bbox=x0,y0,x1,y1` stay with their entry.
+    for chunk in re.split(r",(?=\s*\d+\s*:\s*\d+\s*:)", spec):
         chunk = chunk.strip()
         if not chunk:
             continue
@@ -105,12 +113,13 @@ def parse_figs(
 
 # ---------------------------------------------------------------------------
 # Caption-keyword variants used everywhere captions are located. Strong forms
-# carry a definite caption terminator (period / Chinese colon / full-width
-# colon) — the standard caption patterns across publishers + Chinese-language
-# papers. Weak forms are fallbacks for papers that drop the terminator.
+# carry a definite caption terminator (period / colon / full-width colon) —
+# the standard caption patterns across publishers + Chinese-language papers.
+# Weak forms are fallbacks for papers that drop the terminator.
 #
 # Languages covered explicitly:
 #   - English / German:  Fig. N. / Figure N. / Abb. N. / FIGURE N.
+#                        Fig. N: / Figure N: (NeurIPS / ICML / arXiv style)
 #   - Chinese:           图 N. / 图N. / 图 N: / 图N：(full-width colon)
 #
 # Chinese support added after real-world tests on Chinese-source journals
@@ -119,6 +128,7 @@ def parse_figs(
 # ---------------------------------------------------------------------------
 _STRONG_KW_FORMS: Tuple[str, ...] = (
     "Fig. {n}.", "Figure {n}.", "Fig {n}.", "FIGURE {n}.", "Abb. {n}.",
+    "Fig. {n}:", "Figure {n}:", "Fig {n}:", "FIGURE {n}:", "Abb. {n}:",
     "图 {n}.", "图{n}.", "图 {n}:", "图{n}:", "图 {n}：", "图{n}：",
 )
 _WEAK_KW_FORMS: Tuple[str, ...] = (
@@ -144,6 +154,11 @@ def _weak_keywords(fig_num: int) -> List[str]:
     return [f.format(n=fig_num) for f in _WEAK_KW_FORMS]
 
 
+def _is_strong(kw: str) -> bool:
+    """A keyword is strong when it ends in a caption terminator (. : ：)."""
+    return kw.rstrip()[-1:] in (".", ":", "：")
+
+
 # ---------------------------------------------------------------------------
 # Per-page memoization. PyMuPDF's search_for / get_text / get_drawings /
 # get_images are non-trivial and the multi-figure pipeline hits each page
@@ -155,6 +170,7 @@ _PAGE_CACHE: Dict[Tuple[int, int], Dict[str, object]] = {}
 
 def _clear_page_cache() -> None:
     _PAGE_CACHE.clear()
+    _BODY_SIZE.clear()
 
 
 def _page_slot(page: "fitz.Page") -> Dict[str, object]:
@@ -177,6 +193,69 @@ def _search_for(page: "fitz.Page", kw: str) -> List[fitz.Rect]:
     return cache[kw]
 
 
+def _page_lines(page: "fitz.Page") -> List[tuple]:
+    """Cached text lines of `page` as
+    (bbox, rounded dir, text, block index, max font size, all-bold)."""
+    slot = _page_slot(page)
+    cached = slot.get("lines")
+    if cached is None:
+        cached = []
+        for bi, b in enumerate(page.get_text("dict").get("blocks", [])):
+            if b.get("type") != 0:
+                continue
+            for ln in b.get("lines", []):
+                d = ln.get("dir", (1, 0))
+                spans = [sp for sp in ln.get("spans", []) if sp.get("text", "").strip()]
+                text = "".join(sp.get("text", "") for sp in ln.get("spans", []))
+                size = max((sp.get("size", 0.0) for sp in spans), default=0.0)
+                bold = bool(spans) and all(sp.get("flags", 0) & 16 for sp in spans)
+                cached.append((fitz.Rect(ln["bbox"]), (round(d[0]), round(d[1])),
+                               text, bi, size, bold))
+        slot["lines"] = cached
+    return cached
+
+
+_BODY_SIZE: Dict[int, float] = {}
+
+
+def _body_font_size(doc: "fitz.Document") -> float:
+    """Most common font size in the document, weighted by characters."""
+    key = id(doc)
+    if key not in _BODY_SIZE:
+        counts: Dict[float, int] = {}
+        for page in doc:
+            for line in _page_lines(page):
+                sz = round(line[4], 1)
+                counts[sz] = counts.get(sz, 0) + len(line[2].strip())
+        _BODY_SIZE[key] = max(counts, key=counts.get) if counts else 10.0
+    return _BODY_SIZE[key]
+
+
+def _line_of(page: "fitz.Page", r: fitz.Rect):
+    """The text line holding hit rect `r` (by its centre), or None."""
+    cx, cy = _rect_center(r)
+    for line in _page_lines(page):
+        bbox = line[0]
+        if bbox.x0 - 1 <= cx <= bbox.x1 + 1 and bbox.y0 - 1 <= cy <= bbox.y1 + 1:
+            return line
+    return None
+
+
+def _starts_line(page: "fitz.Page", r: fitz.Rect, kw: str) -> bool:
+    """True when the hit opens its text line — the shape of a caption label
+    ("Figure 3: ...") rather than an in-text mention ("... in Figure 3.")."""
+    line = _line_of(page, r)
+    if line is None:
+        return False
+    bbox, d, text = line[:3]
+    if not text.lstrip().lower().startswith(kw.strip().lower()):
+        return False
+    return d != (1, 0) or r.x0 - bbox.x0 < 3
+
+
+_DIR_TO_ROTATION = {(1, 0): 0, (0, -1): 90, (-1, 0): 180, (0, 1): 270}
+
+
 # ---------------------------------------------------------------------------
 # Rect math helpers — used in several places for Voronoi assignment.
 # ---------------------------------------------------------------------------
@@ -190,27 +269,36 @@ def _rect_dist(r1: fitz.Rect, r2: fitz.Rect) -> float:
     return ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5
 
 
+def _rect_gap(r1: fitz.Rect, r2: fitz.Rect) -> float:
+    """Shortest distance between the edges of two rects (0 if they touch)."""
+    dx = max(0.0, r1.x0 - r2.x1, r2.x0 - r1.x1)
+    dy = max(0.0, r1.y0 - r2.y1, r2.y0 - r1.y1)
+    return (dx * dx + dy * dy) ** 0.5
+
+
 # ---------------------------------------------------------------------------
 # Caption-candidate scoring shared by find_caption_rect and auto_discover.
 # ---------------------------------------------------------------------------
-def _hit_score_key(item):
-    """Sort key for candidate hits: (density-above, y0). Lower = better."""
-    return (item[-1], item[0].y0 if isinstance(item[0], fitz.Rect) else item[1].y0)
+def _hit_rank(page: "fitz.Page", r: fitz.Rect, kw: str) -> Tuple[bool, bool, int, float]:
+    """Sort key for a caption candidate; lower = more caption-like.
+
+    A hit that opens its text line beats an in-text mention; then a strong
+    form (terminator) beats a weak one; then the sparsest strip above it
+    (caption under a figure vs. mention inside prose); then the topmost.
+    """
+    return (not _starts_line(page, r, kw), not _is_strong(kw),
+            _text_density_above(page, r), r.y0)
 
 
 def _pick_best_on_page(page: "fitz.Page", keywords: List[str]) -> Optional[Tuple[fitz.Rect, str]]:
-    """Among all hits of `keywords` on `page`, return the lowest-density one.
+    """Among all hits of `keywords` on `page`, return the most caption-like.
 
     Returns (rect, keyword) or None if no keyword matched.
     """
-    best = None  # (rect, kw, density)
-    for kw in keywords:
-        for r in _search_for(page, kw):
-            density = _text_density_above(page, r)
-            cand = (r, kw, density)
-            if best is None or (cand[2], cand[0].y0) < (best[2], best[0].y0):
-                best = cand
-    return (best[0], best[1]) if best else None
+    hits = [(r, kw) for kw in keywords for r in _search_for(page, kw)]
+    if not hits:
+        return None
+    return min(hits, key=lambda h: _hit_rank(page, h[0], h[1]))
 
 
 def find_all_caption_rects_on_page(
@@ -337,7 +425,10 @@ def find_figure_region_near(
 
     near: List[fitz.Rect] = []
     for r in candidates:
-        if _rect_dist(r, anchor) > max_center_distance:
+        # Far-away candidates (logos, other columns) are skipped, but a big
+        # figure whose edge sits right at its caption counts even when its
+        # centre is far away (a full-page image).
+        if _rect_dist(r, anchor) > max_center_distance and _rect_gap(r, anchor) > 36:
             continue
         if horizontal:
             cand_y_bot = r.y1
@@ -360,6 +451,136 @@ def find_figure_region_near(
     for r in near[1:]:
         union |= r
     return union
+
+
+# A text block that opens with a figure / table label is a caption, never
+# figure content (it must not be pulled into a neighbouring crop).
+_CAPTION_START = re.compile(r"^\s*(fig\.?|figure|abb\.?|table|tab\.|图|表)\s*\d", re.IGNORECASE)
+
+
+def _attachable_text(page: "fitz.Page") -> List[fitz.Rect]:
+    """Text lines that may be figure labels: everything except prose
+    paragraphs (a block with a line wider than 45% of the page carrying
+    40+ chars), caption blocks and headings (bold and larger than the
+    body text). Cached per page."""
+    slot = _page_slot(page)
+    cached = slot.get("label_lines")
+    if cached is not None:
+        return cached  # type: ignore[return-value]
+    lines = _page_lines(page)
+    pw = page.rect.width
+    body = _body_font_size(page.parent)
+    skip = set()
+    first_text: Dict[int, str] = {}
+    for bbox, d, text, bi, size, bold in lines:
+        first_text.setdefault(bi, text)
+        if d == (1, 0) and bbox.width > 0.45 * pw and len(text.strip()) >= 40:
+            skip.add(bi)
+        if bold and size > body + 0.5:
+            skip.add(bi)
+    skip |= {bi for bi, t in first_text.items() if _CAPTION_START.match(t)}
+    cached = [line[0] for line in lines if line[3] not in skip]
+    slot["label_lines"] = cached
+    return cached
+
+
+def _caption_free_area(
+    page: "fitz.Page", region: fitz.Rect, cap: fitz.Rect,
+) -> Tuple[fitz.Rect, str]:
+    """Return (area, side): the page area on the figure's side of its
+    caption, so neither the crop nor its growth reaches into the printed
+    caption, and the side ('below' / 'above' / 'right' / 'left') the
+    caption sits on relative to `region`."""
+    line = _line_of(page, cap)
+    cap_line = line[0] if line else fitz.Rect(cap)
+    blk = fitz.Rect(cap_line)
+    if line:
+        for other in _page_lines(page):
+            bbox, bi = other[0], other[3]
+            if bi == line[3]:
+                blk = fitz.Rect(min(blk.x0, bbox.x0), min(blk.y0, bbox.y0),
+                                max(blk.x1, bbox.x1), max(blk.y1, bbox.y1))
+    gaps = {  # side the caption sits on, relative to the figure
+        "below": blk.y0 - region.y1, "above": region.y0 - blk.y1,
+        "right": blk.x0 - region.x1, "left": region.x0 - blk.x1,
+    }
+    side = max(gaps, key=gaps.get)
+    area = fitz.Rect(page.rect)
+    # The caption's first line faces the figure when the caption follows it
+    # (below, or beside a figure rotated together with its caption).
+    if side == "below":
+        area.y1 = cap_line.y0 - 1
+    elif side == "above":
+        area.y0 = blk.y1 + 1
+    elif side == "right":
+        area.x1 = cap_line.x0 - 1
+    else:
+        area.x0 = cap_line.x1 + 1
+    return area, side
+
+
+def _grow_region(
+    page: "fitz.Page", seed: fitz.Rect, area: fitz.Rect, side: str = "below",
+    gap: float = 6.0, max_passes: int = 80,
+) -> fitz.Rect:
+    """Grow `seed` by every image, vector drawing (any size) and label-like
+    text line within `gap` pt of it, repeatedly. Picks up axis / node
+    labels and thin strokes that lie outside the big candidates, e.g.
+    vertical word labels of attention maps. Toward the caption (`side`)
+    the reach is unlimited: whatever sits between a figure and its own
+    caption belongs to the figure (x-axis labels, legends). Only items
+    fully inside `area` (the caption-free side) count; prose paragraphs,
+    headings and captions never do.
+    """
+    far = 1e9
+    reach = {"below": (gap, gap, gap, far), "above": (gap, far, gap, gap),
+             "right": (gap, gap, far, gap), "left": (far, gap, gap, gap)}[side]
+    pw, ph = page.rect.width, page.rect.height
+    items = [r for r in _figure_candidates(page, 0.0)
+             if not (r.width > 0.9 * pw and r.height > 0.9 * ph)]
+    items += _attachable_text(page)
+    tol = 0.5
+    items = [r for r in items
+             if r.x0 >= area.x0 - tol and r.y0 >= area.y0 - tol
+             and r.x1 <= area.x1 + tol and r.y1 <= area.y1 + tol]
+    x0, y0, x1, y1 = seed.x0, seed.y0, seed.x1, seed.y1
+    for _ in range(max_passes):
+        rest = []
+        for r in items:
+            if (r.x0 <= x1 + reach[2] and r.x1 >= x0 - reach[0]
+                    and r.y0 <= y1 + reach[3] and r.y1 >= y0 - reach[1]):
+                x0, y0 = min(x0, r.x0), min(y0, r.y0)
+                x1, y1 = max(x1, r.x1), max(y1, r.y1)
+            else:
+                rest.append(r)
+        if len(rest) == len(items):
+            break
+        items = rest
+    return fitz.Rect(x0, y0, x1, y1)
+
+
+def _keep_pad_off_text(page: "fitz.Page", region: fitz.Rect, clip: fitz.Rect) -> fitz.Rect:
+    """Pull the padded `clip` back to `region` wherever the padding would
+    reach into a text line that did not join the figure (heading, prose,
+    caption), so no sliver of it shows at the crop's edge."""
+    joined = set(map(tuple, _attachable_text(page)))
+    x0, y0, x1, y1 = clip.x0, clip.y0, clip.x1, clip.y1
+    for line in _page_lines(page):
+        r = line[0]
+        if tuple(r) in joined or not r.intersects(clip):
+            continue
+        cx, cy = _rect_center(r)
+        if r.x1 > region.x0 and r.x0 < region.x1:      # above / below
+            if cy < region.y0:
+                y0 = max(y0, min(r.y1, region.y0))
+            elif cy > region.y1:
+                y1 = min(y1, max(r.y0, region.y1))
+        if r.y1 > region.y0 and r.y0 < region.y1:      # left / right
+            if cx < region.x0:
+                x0 = max(x0, min(r.x1, region.x0))
+            elif cx > region.x1:
+                x1 = min(x1, max(r.x0, region.x1))
+    return fitz.Rect(x0, y0, x1, y1)
 
 
 def detect_clip_rotation(page: "fitz.Page", clip: fitz.Rect) -> int:
@@ -444,7 +665,9 @@ def write_figure_includes_tex(
         "% ============================================================",
         "% Auto-generated by render_figures.py.",
         "% Paste each block into main.tex where the figure should appear,",
-        "% then fill in the TODO caption and \\label. Width is chosen from",
+        "% then fill in the TODO caption (source caption without its",
+        "% 'Figure N:' label + Chinese, ending with 图中文字：... when the",
+        "% figure contains text) and \\label. Width is chosen from",
         "% each PNG's aspect ratio so the figure fits on a shared page and",
         "% doesn't get deferred to the end of the document by LaTeX float.",
         "% ============================================================",
@@ -467,7 +690,7 @@ def write_figure_includes_tex(
         lines.append("\\begin{figure}[!htbp]")
         lines.append("\\centering")
         lines.append(f"\\includegraphics[width={width}\\textwidth]{{{rel}}}")
-        lines.append("\\caption{TODO}")
+        lines.append("\\caption{\\bihead{TODO source caption}{TODO 中文图题}}")
         lines.append(f"\\label{{fig:fig{fig_num}}}")
         lines.append("\\end{figure}")
         lines.append("")
@@ -485,6 +708,7 @@ def write_inspection_html(
     out_dir: str,
     rendered: List[Tuple[int, str, int, fitz.Rect]],
     doc: "fitz.Document",
+    flags: Optional[Dict[int, List[Tuple[str, str]]]] = None,
 ) -> None:
     """Emit `_inspection.html` next to images/: a side-by-side gallery
     showing each extracted `figN.png` against a thumbnail of the source
@@ -507,8 +731,15 @@ def write_inspection_html(
     if os.path.basename(os.path.normpath(out_dir)).lower() == "images":
         parent = os.path.dirname(os.path.normpath(out_dir)) or "."
     sidecar = os.path.join(parent, "_inspection.html")
+    flags = flags or {}
 
-    # Render each unique source page once into images/ as `_inspect_pNN.png`.
+    # Render each unique source page once as `_inspect_pNN.png` NEXT TO the
+    # HTML (not inside images/, which is what gets zipped for Overleaf).
+    # Thumbnails an older version left in images/ are removed.
+    if os.path.abspath(parent) != os.path.abspath(images_dir):
+        for name in os.listdir(images_dir):
+            if name.startswith("_inspect_p") and name.endswith(".png"):
+                os.remove(os.path.join(images_dir, name))
     unique_pages = sorted({page_1based for _, _, page_1based, _ in rendered})
     page_thumbs: Dict[int, str] = {}
     for p in unique_pages:
@@ -516,14 +747,14 @@ def write_inspection_html(
             page = doc[p - 1]
             pix = page.get_pixmap(matrix=fitz.Matrix(_INSPECT_SCALE, _INSPECT_SCALE))
             thumb_name = f"_inspect_p{p:02d}.png"
-            pix.save(os.path.join(images_dir, thumb_name))
+            pix.save(os.path.join(parent, thumb_name))
             page_thumbs[p] = thumb_name
         except Exception as e:
             print(f"  [WARN] could not render page {p} thumb: {e}")
 
     rows = []
     for fig_num, png_path, page_1based, clip in rendered:
-        png_basename = os.path.basename(png_path)
+        png_rel = os.path.relpath(png_path, parent).replace(os.sep, "/")
         thumb_basename = page_thumbs.get(page_1based, "")
         if thumb_basename:
             # Page dimensions at INSPECT_SCALE = clip CSS coords
@@ -537,19 +768,23 @@ def write_inspection_html(
             overlay = (
                 f'<div class="page-wrap" style="width:{page_w_css:.0f}px;'
                 f'height:{page_h_css:.0f}px;">'
-                f'<img src="images/{thumb_basename}" '
+                f'<img src="{thumb_basename}" '
                 f'style="width:{page_w_css:.0f}px;height:{page_h_css:.0f}px;">'
                 f'<div class="clip-box" style="left:{cx:.0f}px;top:{cy:.0f}px;'
                 f'width:{cw:.0f}px;height:{ch:.0f}px;"></div></div>'
             )
         else:
             overlay = '<div class="page-wrap">(page thumbnail unavailable)</div>'
+        flag_html = "".join(
+            f'<div class="flag {level.lower()}">{level}: {html_escape(msg)}</div>'
+            for level, msg in flags.get(fig_num, []))
         rows.append(
             f'<section class="fig-row">'
             f'<h2>fig{fig_num} — page {page_1based}</h2>'
+            f'{flag_html}'
             f'<div class="cols">'
             f'<div class="panel"><h3>Extracted</h3>'
-            f'<img class="extracted" src="images/{png_basename}">'
+            f'<img class="extracted" src="{png_rel}">'
             f'<div class="meta">clip = ({clip.x0:.0f}, {clip.y0:.0f}) → '
             f'({clip.x1:.0f}, {clip.y1:.0f})</div></div>'
             f'<div class="panel"><h3>Source page (red = crop region)</h3>'
@@ -580,15 +815,20 @@ def write_inspection_html(
   .clip-box {{ position: absolute; border: 2px solid #e63946;
                background: rgba(230,57,70,0.08); pointer-events: none; }}
   .meta {{ font-size: 11px; color: #999; margin-top: 4px; font-family: monospace; }}
+  .flag {{ padding: 6px 10px; margin-bottom: 8px; border-radius: 4px; font-size: 14px; }}
+  .flag.warn {{ background: #fde2e4; border-left: 4px solid #e63946; font-weight: bold; }}
+  .flag.note {{ background: #fff3cd; border-left: 4px solid #f0ad4e; }}
 </style></head><body>
 <h1>Figure inspection — {len(rendered)} figure(s)</h1>
 <div class="help">
   Scan each row. The left panel is what got dropped into <code>images/fig*.png</code>.
   The right panel shows the source PDF page; the <strong>red box</strong> marks the
-  exact crop region. If anything looks wrong (figure clipped, wrong region,
+  exact crop region — the figure only, the printed caption stays outside
+  (LaTeX typesets it). If anything looks wrong (figure clipped, wrong region,
   rotation off), override that figure with
   <code>|bbox=x0,y0,x1,y1</code> or <code>|rotate=N</code> in <code>--figs</code> —
-  see <code>references/troubleshooting.md</code>.
+  see <code>references/troubleshooting.md</code>. Rows with a red WARN were
+  anchored on a weak / in-text mention and are probably wrong.
 </div>
 {"".join(rows)}
 </body></html>
@@ -652,13 +892,12 @@ def find_caption_rect(
 ) -> Tuple[Optional[fitz.Rect], Optional[str]]:
     """Locate the caption bbox for figure `fig_num`.
 
-    Tries strong keyword forms (terminal period — standard caption
-    pattern) first; falls back to weak forms (no terminal period). Among
-    all hits in the winning set, picks the lowest-density-above one.
+    Ranks every hit of the strong forms (terminator — standard caption
+    pattern), the user keyword and the weak forms (no terminator) with
+    `_hit_rank`: line-opening hits first, strong before weak.
     """
-    hit = _pick_best_on_page(page, _strong_keywords(fig_num, user_keyword))
-    if hit is None:
-        hit = _pick_best_on_page(page, _weak_keywords(fig_num))
+    hit = _pick_best_on_page(
+        page, _strong_keywords(fig_num, user_keyword) + _weak_keywords(fig_num))
     return hit if hit else (None, None)
 
 
@@ -713,13 +952,18 @@ def render_one(
     rotate_override: Optional[int] = None,
     top_margin: float = 72.0,
     side_margin: float = 0.0,
-    bottom_pad: float = 8.0,
+    pad: float = 4.0,
     scale: float = 3.0,
-) -> Tuple[fitz.Rect, bool, str]:
-    """Render one figure. Returns (clip_used, used_fallback, note)."""
+) -> Tuple[fitz.Rect, bool, str, List[Tuple[str, str]]]:
+    """Render one figure (figure content only — the printed caption is
+    excluded). Returns (clip_used, used_fallback, note, flags) where
+    flags is a list of ("WARN" | "NOTE", message) for the summary and the
+    inspection page."""
     page = doc[page_idx0]
     pw, ph = page.rect.width, page.rect.height
     fallback = False  # only flipped True for the full-page fallback below
+    flags: List[Tuple[str, str]] = []
+    cap: Optional[fitz.Rect] = None
 
     if bbox_override is not None:
         clip = bbox_override
@@ -731,10 +975,17 @@ def render_one(
             fallback = True
             note = "no caption keyword matched, full page fallback"
         else:
+            if not _starts_line(page, cap, kw_hit):
+                flags.append(("WARN", f"anchor '{kw_hit.strip()}' sits mid-line "
+                              "- looks like an in-text mention, not the caption"))
+            elif not _is_strong(kw_hit):
+                flags.append(("WARN", f"anchored on weak form '{kw_hit.strip()}' "
+                              f"(no 'Figure {fig_num}:' / 'Figure {fig_num}.' caption found; "
+                              "fine only if captions carry no terminator, e.g. 'Fig. 1 Title')"))
             # Primary strategy: find the actual image / drawing region near
-            # the caption and union with the caption rect. Works for
-            # normal, rotated, side-by-side, and irregular layouts because
-            # it doesn't assume "image is directly above caption".
+            # the caption. Works for normal, rotated, side-by-side, and
+            # irregular layouts because it doesn't assume "image is
+            # directly above caption".
             #
             # On multi-figure pages, pass other figures' captions so the
             # Voronoi-style assignment keeps each figure's clip to its own
@@ -746,30 +997,31 @@ def render_one(
             fig_region = find_figure_region_near(page, cap, other_captions=others)
             if fig_region is not None:
                 # bbox-based clip: trust the actual figure region's natural
-                # extent. `top_margin` / `side_margin` are user-supplied
-                # safety floors for the FALLBACK path; they don't apply
-                # here because the bbox detection has already located the
-                # real figure content. Watermark exclusion (below) will
-                # shrink the clip if a header / sidebar still intersects.
-                union = fitz.Rect(fig_region) | cap
+                # extent, grown by the labels / thin strokes touching it.
+                # `top_margin` / `side_margin` are user-supplied safety
+                # floors for the FALLBACK path; they don't apply here.
+                # Watermark exclusion (below) will shrink the clip if a
+                # header / sidebar still intersects.
+                area, side = _caption_free_area(page, fig_region, cap)
+                region = _grow_region(page, fig_region, area, side)
                 clip = fitz.Rect(
-                    max(0, union.x0 - 4),
-                    max(0, union.y0 - 4),
-                    min(pw, union.x1 + 4),
-                    min(ph, union.y1 + bottom_pad),
-                )
-                note = (f"caption hit on '{kw_hit}' at y={cap.y0:.0f}"
-                        f" + figure region {fig_region}")
+                    max(0, region.x0 - pad), max(0, region.y0 - pad),
+                    min(pw, region.x1 + pad), min(ph, region.y1 + pad),
+                ) & area
+                clip = _keep_pad_off_text(page, region, clip)
+                note = (f"caption hit on '{kw_hit}' at y={cap.y0:.0f} (caption {side}{' of' if side in ('left', 'right') else ''} "
+                        f"the figure, excluded) + figure region {fig_region}")
             else:
                 # Fallback: classic caption-anchored crop (no image XObject
-                # or vector drawing found near caption).
+                # or vector drawing found near caption): the band between
+                # the previous caption (or `top_margin`) and this caption.
                 prev_caps = []
                 for kw in ("Fig.", "Figure", "Table"):
                     for r in _search_for(page, kw):
                         if r.y1 < cap.y0 - 10:
                             prev_caps.append(r)
                 y_top = max((r.y1 for r in prev_caps), default=top_margin) + 4
-                y_bot = cap.y1 + bottom_pad
+                y_bot = cap.y0 - 2
                 clip = fitz.Rect(side_margin, y_top, pw - side_margin, y_bot)
                 note = (f"caption hit on '{kw_hit}' at y={cap.y0:.0f}"
                         f" (no image region found, caption-anchored fallback)")
@@ -782,13 +1034,25 @@ def render_one(
                 note += f" + watermark-shrunk ({len(wm_boxes)} hits)"
                 clip = shrunk
 
-    # Decide rotation: manual override wins; otherwise auto-detect from text.
+    # Decide rotation: manual override wins; then the caption's own text
+    # direction (a figure rotated onto a portrait page is rotated together
+    # with its caption); without a caption, vote over the clip's text.
+    voted = detect_clip_rotation(page, clip)
     if rotate_override is not None:
         rotation = rotate_override
         if rotation:
             note += f" + manual rotate={rotation}°"
+    elif cap is not None:
+        line = _line_of(page, cap)
+        rotation = _DIR_TO_ROTATION.get(line[1] if line else (1, 0), 0)
+        if rotation:
+            note += f" + auto-rotated {rotation}° (caption direction)"
+        if voted != rotation:
+            flags.append(("NOTE", f"most text inside the figure reads {voted}° off, but the "
+                          f"caption reads {rotation}° off -> kept at {rotation}°; if the PNG "
+                          f"is sideways, re-run with |rotate={voted}"))
     else:
-        rotation = detect_clip_rotation(page, clip)
+        rotation = voted
         if rotation:
             note += f" + auto-rotated {rotation}° (text direction)"
 
@@ -801,7 +1065,7 @@ def render_one(
         # emitted here — the sidecar is the single source of truth for
         # figure-include scaffolding.
     pix.save(out_path)
-    return clip, fallback, note
+    return clip, fallback, note, flags
 
 
 def auto_discover_figures(
@@ -811,12 +1075,12 @@ def auto_discover_figures(
 ) -> List[Tuple[int, int, str]]:
     """Scan all pages for figure captions and emit `(fig_num, page_1based, kw)`.
 
-    For each figure number N, gathers EVERY hit of strong-form keywords
-    (`Fig. N.` / `Figure N.` / `FIGURE N.` / `Abb. N.`, terminal period)
-    across all pages and picks the hit with the LOWEST text-density in
-    the strip immediately above it — the strongest signal of "image
-    above, caption below" vs "embedded in body prose". Falls back to
-    weak keywords (no terminal period) if no strong hits exist.
+    For each figure number N, gathers EVERY hit of the caption keywords
+    (strong: `Fig. N.` / `Figure N:` / ..., weak: `Figure N `) across all
+    pages and ranks them with `_hit_rank`: a hit that opens its text line
+    beats an in-text mention, strong beats weak, then the LOWEST
+    text-density in the strip immediately above it — the strongest signal
+    of "image above, caption below" vs "embedded in body prose".
 
     This handles two adversarial layouts correctly:
 
@@ -835,25 +1099,24 @@ def auto_discover_figures(
     out: List[Tuple[int, int, str]] = []
     consec_miss = 0
 
-    def gather(n: int, keywords: List[str]) -> List[Tuple[int, fitz.Rect, str, int]]:
-        hits: List[Tuple[int, fitz.Rect, str, int]] = []
+    def gather(n: int, keywords: List[str]):
+        hits = []
         for page_idx, page in enumerate(doc):
             for kw in keywords:
                 for r in _search_for(page, kw):
-                    hits.append((page_idx + 1, r, kw, _text_density_above(page, r)))
+                    hits.append((_hit_rank(page, r, kw), page_idx + 1, kw))
         return hits
 
     for n in range(1, max_fig + 1):
-        candidates = gather(n, _strong_keywords(n)) or gather(n, _weak_keywords(n))
+        candidates = gather(n, _strong_keywords(n) + _weak_keywords(n))
         if not candidates:
             consec_miss += 1
             if consec_miss >= stop_after_misses:
                 break
             continue
         consec_miss = 0
-        # Lowest density-above wins; tie-break by smaller y0 for determinism.
-        best = min(candidates, key=lambda t: (t[3], t[1].y0))
-        out.append((n, best[0], best[2]))
+        best = min(candidates, key=lambda t: (t[0], t[1]))
+        out.append((n, best[1], best[2]))
     return out
 
 
@@ -926,10 +1189,11 @@ def main() -> None:
     n_fallback = 0
     # Collect per-figure metadata to emit _figure_includes.tex sidecar
     rendered: List[Tuple[int, str, int, fitz.Rect]] = []  # (fig_num, png_path, page_1based, clip)
+    all_flags: Dict[int, List[Tuple[str, str]]] = {}
     for fig_num, page, kw, bbox, rotate in figs:
         out_path = os.path.join(args.out, f"fig{fig_num}.png")
         try:
-            clip, fb, note = render_one(
+            clip, fb, note, flags = render_one(
                 doc, page - 1, fig_num, kw, out_path,
                 bbox_override=bbox,
                 rotate_override=rotate,
@@ -940,6 +1204,8 @@ def main() -> None:
         except IndexError:
             print(f"  fig{fig_num}: page {page} out of range (PDF has {len(doc)} pages)")
             continue
+        if flags:
+            all_flags[fig_num] = flags
         if fb:
             print(f"  fig{fig_num} (page {page}): FALLBACK -- {note}")
             n_fallback += 1
@@ -948,6 +1214,8 @@ def main() -> None:
             print(f"    clip={clip}  -- {note}")
             n_ok += 1
             rendered.append((fig_num, out_path, page, clip))
+        for level, msg in flags:
+            print(f"    [{level}] {msg}")
 
     # Emit _figure_includes.tex sidecar — aspect-aware \includegraphics
     # blocks for every successfully rendered figure. The translator pastes
@@ -955,11 +1223,23 @@ def main() -> None:
     # "huge figure floats to end of doc" trap by default.
     if rendered:
         write_figure_includes_tex(args.out, rendered)
-        write_inspection_html(args.out, rendered, doc)
+        write_inspection_html(args.out, rendered, doc, all_flags)
     doc.close()
-    print(f"Done: {n_ok} cropped, {n_fallback} fallback to full page.")
+    n_warn = sum(1 for fl in all_flags.values() if any(lv == "WARN" for lv, _ in fl))
+    print(f"Done: {n_ok} cropped, {n_fallback} fallback to full page"
+          + (f", {n_warn} WARN." if n_warn else "."))
     if n_fallback:
         print("Tip: inspect the fallback PNGs; pass a |bbox=... override or fix the keyword.")
+    for fig_num in sorted(all_flags):
+        for level, msg in all_flags[fig_num]:
+            if level == "WARN":
+                print(f"[WARN] fig{fig_num}: {msg}. Check this crop in _inspection.html; "
+                      "if it is not the figure, fix the page/keyword in --figs "
+                      "or pass |bbox=x0,y0,x1,y1.")
+    for fig_num in sorted(all_flags):
+        for level, msg in all_flags[fig_num]:
+            if level == "NOTE":
+                print(f"[NOTE] fig{fig_num}: {msg}.")
 
 
 if __name__ == "__main__":

@@ -1,12 +1,19 @@
 # -*- coding: utf-8 -*-
-"""Build a `\\bibitem{...}` skeleton from raw.txt.
+"""Build a `\\bibitem{...}` skeleton from source.txt (or raw.txt).
 
-Locates the References / Bibliography section header in `raw.txt`
-(written by `extract_text.py`), groups everything below into entries,
+Locates the References / Bibliography section header in the text dump
+written by `extract_text.py`, groups everything below into entries,
 and emits a `thebibliography` block where each `\\bibitem{refN}` holds
 the original-language entry text. The translator only has to copy the
 block into `main.tex` and (optionally) tidy line wraps / punctuation —
 no more hand-transcribing 40+ author/year/journal strings.
+
+Input: pass `source.txt` (PyMuPDF, word spacing intact). Given `raw.txt`
+(pdfplumber, loses spaces on tightly kerned PDFs: "JimmyLeiBa,") the
+script reads the `source.txt` next to it instead when one exists.
+Page numbers at page breaks are dropped, and the list stops where the
+references end (an Appendix heading, or a page break followed by a page
+with no further entries), so appendix text never lands in the last entry.
 
 Two entry styles are handled:
 
@@ -23,9 +30,9 @@ Two entry styles are handled:
   ``Surname, X.`` pattern and renumbered 1..N automatically.
 
 Usage:
-    python extract_bibliography.py raw.txt              # to stdout
-    python extract_bibliography.py raw.txt --out bib.tex  # to file
-    python extract_bibliography.py raw.txt --key-prefix smith  # \\bibitem{smith1}
+    python extract_bibliography.py source.txt              # to stdout
+    python extract_bibliography.py source.txt --out bib.tex  # to file
+    python extract_bibliography.py source.txt --key-prefix smith  # \\bibitem{smith1}
 """
 
 import argparse
@@ -33,7 +40,7 @@ import io
 import os
 import re
 import sys
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 # Section-header patterns. Matched against a stripped line via `search`,
 # so the header word can be followed by body-text overflow on the same
@@ -106,6 +113,25 @@ SKIP_PATTERNS = [
 ]
 
 
+# Page delimiter written by extract_text.py, and the sentinel it becomes
+# inside the references section (so the end-of-section logic can see
+# page breaks after the delimiter lines themselves are gone).
+PAGE_DELIM = re.compile(r"^=+\s*PAGE\s+(\d+)\s*=+$")
+PAGE_BREAK = "\f"
+
+# A bare page number (header / footer) on its own line.
+BARE_NUMBER = re.compile(r"^\s*\d{1,4}\s*$")
+
+# A heading that ends the references: an appendix / supplement.
+APPENDIX_HEADING = re.compile(
+    r"^\s*(?:[A-Z]\.?\s+)?(?:Appendix|APPENDIX|Appendices|APPENDICES|"
+    r"Supplementary|SUPPLEMENTARY|Supplemental|附录)\b"
+)
+
+# Text that can end a bibliography entry.
+ENTRY_END = re.compile(r"[.!?)\]]\s*$")
+
+
 def find_references_start(lines: List[str]) -> int:
     """Return the index of the line AFTER the References header. -1 if not found.
 
@@ -164,10 +190,89 @@ def should_skip(line: str) -> bool:
     return False
 
 
+def prepare_section(lines: List[str]) -> Tuple[List[str], set]:
+    """Clean the lines after the References header.
+
+    Page delimiters become PAGE_BREAK sentinels, bare page numbers next to
+    a page break (or at the very end) are dropped, publisher debris is
+    skipped, and everything from an Appendix / Supplementary heading on is
+    cut. Returns (lines, page numbers seen) — the latter lets
+    `_strip_page_number` catch a number still glued to an entry's end.
+    """
+    pages: set = set()
+    out: List[str] = []
+    for ln in lines:
+        s = ln.strip()
+        m = PAGE_DELIM.match(s)
+        if m:
+            pages.add(int(m.group(1)))
+            out.append(PAGE_BREAK)
+            continue
+        if APPENDIX_HEADING.match(s) and len(s) < 80:
+            break
+        if not s or should_skip(ln):
+            continue
+        out.append(ln)
+    keep: List[str] = []
+    for i, ln in enumerate(out):
+        if ln != PAGE_BREAK and BARE_NUMBER.match(ln):
+            prev = out[i - 1] if i > 0 else None
+            nxt = out[i + 1] if i + 1 < len(out) else None
+            if prev == PAGE_BREAK or nxt in (PAGE_BREAK, None):
+                pages.add(int(ln.strip()))
+                continue
+        keep.append(ln)
+    return keep, pages
+
+
+def _cut_after_references(chunk: List[str]) -> List[str]:
+    """Trim the LAST entry where the references end: at a page break after
+    which the entry is already complete (the next page holds no further
+    entries, e.g. an appendix). An entry that breaks mid-sentence keeps at
+    most 3 continuation lines from the next page, up to its end."""
+    out: List[str] = []
+    for i, ln in enumerate(chunk):
+        if ln != PAGE_BREAK:
+            out.append(ln)
+            continue
+        if out and ENTRY_END.search(out[-1]):
+            return out
+        for ln2 in [c for c in chunk[i + 1:] if c != PAGE_BREAK][:3]:
+            out.append(ln2)
+            if ENTRY_END.search(ln2):
+                break
+        return out
+    return out
+
+
+def _join(chunk: List[str]) -> str:
+    """Join an entry's lines; a line-end hyphen is kept and joined without
+    a space (`encoder-` + `decoder` -> `encoder-decoder`)."""
+    out = ""
+    for ln in chunk:
+        if ln == PAGE_BREAK:
+            continue
+        ln = ln.strip()
+        if not out:
+            out = ln
+        elif out.endswith("-"):
+            out += ln
+        else:
+            out += " " + ln
+    return re.sub(r"\s+", " ", out).strip()
+
+
+def _strip_page_number(text: str, pages: set) -> str:
+    """Drop a page number glued to the end of an entry ('... 2019. 8')."""
+    m = re.search(r"(?<=[.)\]])\s+(\d{1,4})$", text)
+    if m and int(m.group(1)) in pages:
+        return text[:m.start()].rstrip()
+    return text
+
+
 def parse_entries(lines: List[str]) -> List[Tuple[int, str]]:
     """Group lines into entries. Returns list of (n, text)."""
-    # Filter out skip lines first
-    lines = [ln for ln in lines if not should_skip(ln)]
+    lines, pages = prepare_section(lines)
 
     # Decide style: count which entry pattern is more common in the first
     # ~80 non-empty lines.
@@ -184,38 +289,66 @@ def parse_entries(lines: List[str]) -> List[Tuple[int, str]]:
 
     use_numbered = n_numbered >= n_authoryr and n_numbered > 0
 
-    if use_numbered:
-        return _parse_numbered(lines)
-    return _parse_author_year(lines)
-
-
-def _parse_numbered(lines: List[str]) -> List[Tuple[int, str]]:
-    entries: List[Tuple[int, str]] = []
-    cur_n: int = 0
-    cur_text: List[str] = []
-
-    def flush():
-        if cur_n and cur_text:
-            joined = " ".join(t.strip() for t in cur_text).strip()
-            joined = re.sub(r"\s+", " ", joined)
-            entries.append((cur_n, joined))
-
-    for ln in lines:
-        s = ln.strip()
-        if not s:
-            continue
-        m = NUMBERED_ENTRY.match(ln)
-        if m:
-            flush()
-            cur_n = int(m.group(1))
-            cur_text = [m.group(2).strip()]
-        elif cur_n:
-            cur_text.append(s)
-    flush()
+    chunks = _parse_numbered(lines) if use_numbered else _parse_author_year(lines)
+    if chunks:
+        chunks[-1] = (chunks[-1][0], _cut_after_references(chunks[-1][1]))
+    entries = []
+    for n, chunk in chunks:
+        text = _strip_page_number(_join(chunk), pages)
+        if not use_numbered:
+            text = re.sub(r"\s*©\s*\d{4}.*$", "", text).strip()
+        if text:
+            entries.append((n, text))
     return entries
 
 
-def _parse_author_year(lines: List[str]) -> List[Tuple[int, str]]:
+def _parse_numbered(lines: List[str]) -> List[Tuple[int, List[str]]]:
+    """Group numbered entries ([N] / (N) / N. / N) at line start).
+
+    Numbers only go up, so a continuation line that happens to start with
+    "2. " cannot restart an entry. For the [N] style the next marker is also
+    found mid-line: PyMuPDF blocks can hold several entries
+    ("... 2018. [20] Baptiste Rozière, ...").
+    """
+    entries: List[Tuple[int, List[str]]] = []
+    cur_n: int = 0
+    cur: List[str] = []
+    bracket: Optional[bool] = None
+
+    for ln in lines:
+        if ln == PAGE_BREAK:
+            if cur_n:
+                cur.append(PAGE_BREAK)
+            continue
+        s = ln.strip()
+        m = NUMBERED_ENTRY.match(s)
+        if m and int(m.group(1)) > cur_n:
+            if cur_n:
+                entries.append((cur_n, cur))
+            cur_n, cur = int(m.group(1)), []
+            if bracket is None:
+                bracket = s.startswith("[")
+            s = m.group(2).strip()
+        elif not cur_n:
+            continue  # prologue before the first entry
+        while bracket:
+            mm = re.search(r"(?<!\S)\[%d\]\s+" % (cur_n + 1), s)
+            if not mm:
+                break
+            head = s[:mm.start()].strip()
+            if head:
+                cur.append(head)
+            entries.append((cur_n, cur))
+            cur_n, cur = cur_n + 1, []
+            s = s[mm.end():]
+        if s.strip():
+            cur.append(s.strip())
+    if cur_n and cur:
+        entries.append((cur_n, cur))
+    return entries
+
+
+def _parse_author_year(lines: List[str]) -> List[Tuple[int, List[str]]]:
     """Group entries from author-year style references.
 
     Two complementary strategies are applied:
@@ -232,15 +365,16 @@ def _parse_author_year(lines: List[str]) -> List[Tuple[int, str]]:
        comma, no line break), `AUTHOR_YEAR_SPLIT` cuts on the
        `<period><space><Surname>,<Initial>.,` boundary.
     """
-    # Stage 1: line-anchored grouping
+    # Stage 1: line-anchored grouping (page breaks kept as PAGE_BREAK so
+    # the caller can cut the last entry where the references end)
     groups: List[List[str]] = []
     cur: List[str] = []
     for ln in lines:
-        if should_skip(ln):
+        if ln == PAGE_BREAK:
+            if cur:
+                cur.append(PAGE_BREAK)
             continue
         s = ln.strip()
-        if not s:
-            continue
         if AUTHOR_YEAR_ENTRY.match(s):
             if cur:
                 groups.append(cur)
@@ -251,24 +385,23 @@ def _parse_author_year(lines: List[str]) -> List[Tuple[int, str]]:
     if cur:
         groups.append(cur)
 
-    # Stage 2: stitch each group's lines into one string, then apply
-    # run-on splitting in case multiple entries were on a single line.
-    entries: List[Tuple[int, str]] = []
+    # Stage 2: apply run-on splitting in case multiple entries were on a
+    # single line. A group that holds one entry keeps its lines (and page
+    # breaks); split sub-entries become single-line chunks. The journal-
+    # footer copyright tail is dropped by the caller.
+    entries: List[Tuple[int, List[str]]] = []
     counter = 0
     for group in groups:
-        joined = " ".join(group)
-        joined = re.sub(r"\s+", " ", joined).strip()
-        subs = AUTHOR_YEAR_SPLIT.split(joined)
+        subs = AUTHOR_YEAR_SPLIT.split(_join(group))
+        if len(subs) == 1:
+            counter += 1
+            entries.append((counter, group))
+            continue
         for sub in subs:
             sub = sub.strip()
-            if not sub:
-                continue
-            # Drop the journal-footer copyright tail that sometimes glues
-            # itself to the last entry of the document.
-            sub = re.sub(r"\s*©\s*\d{4}.*$", "", sub).strip()
             if sub and AUTHOR_YEAR_ENTRY.match(sub):
                 counter += 1
-                entries.append((counter, sub))
+                entries.append((counter, [sub]))
     return entries
 
 
@@ -322,7 +455,11 @@ def emit_bib_block(entries: List[Tuple[int, str]], key_prefix: str = "ref") -> s
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("raw", help="path to raw.txt from extract_text.py")
+    parser.add_argument(
+        "raw",
+        help="path to source.txt (preferred) or raw.txt from extract_text.py; "
+             "given raw.txt, the source.txt next to it is read when present",
+    )
     parser.add_argument(
         "--out", default=None,
         help="output .tex fragment path; default writes to stdout",
@@ -340,9 +477,22 @@ def main() -> None:
         print(f"ERROR: {args.raw}: file not found", file=sys.stderr)
         sys.exit(2)
 
-    with open(args.raw, encoding="utf-8") as f:
+    src = args.raw
+    sibling = os.path.join(os.path.dirname(os.path.abspath(src)), "source.txt")
+    if os.path.basename(src).lower() == "raw.txt" and os.path.isfile(sibling):
+        # pdfplumber (raw.txt) drops word spaces on tightly kerned PDFs;
+        # PyMuPDF (source.txt) keeps them.
+        print(f"Reading {sibling} (word spacing intact) instead of raw.txt",
+              file=sys.stderr)
+        src = sibling
+    with open(src, encoding="utf-8") as f:
         text = f.read()
-    lines = text.splitlines()
+    lines = []
+    for ln in text.splitlines():
+        # A header merged with the first entry ("References [1] A. Author")
+        # is split so the header search and the entry parser both see it.
+        m = re.match(r"^(\s*(?:REFERENCES|References|Bibliography|参考文献))\s+(\[1\]\s.*)$", ln)
+        lines.extend([m.group(1), m.group(2)] if m else [ln])
 
     start = find_references_start(lines)
     if start < 0:
