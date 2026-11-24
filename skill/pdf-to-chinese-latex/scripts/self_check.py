@@ -287,24 +287,19 @@ def main():
         results.append(("xelatex compile", None,
                         "xelatex: SKIP (not installed). Install MikTeX/MacTeX/TeXLive to enable."))
     else:
-        # Chinese-only edition, then the bilingual edition (same main.tex).
-        for label, tex in (("xelatex compile", "main.tex"),
-                           ("xelatex compile (bilingual)", "main_bilingual.tex")):
-            last_ok, last_msg = True, f"{label}: OK"
-            for i in (1, 2):  # two passes for cross-refs
-                ok, msg = run(
-                    [xelatex, "-interaction=nonstopmode", "-halt-on-error", tex],
-                    f"xelatex {tex} pass {i}", env=env, cwd=str(tmp),
-                )
-                if not ok:
-                    last_ok, last_msg = False, msg
-                    break
-            pdf_out = tmp / tex.replace(".tex", ".pdf")
-            if last_ok and pdf_out.is_file() and pdf_out.stat().st_size > 1024:
-                last_msg = f"{label}: OK ({pdf_out.stat().st_size} bytes)"
-            elif last_ok:
-                last_ok, last_msg = False, f"xelatex: produced no {pdf_out.name}"
-            results.append((label, last_ok, last_msg))
+        # compile_pdf.py builds main.pdf and main_bilingual.pdf (same main.tex),
+        # falling back to Fandol fonts when system fonts are unreachable.
+        ok, msg = run(
+            [py, str(SCRIPTS_DIR / "compile_pdf.py"), str(tmp), "--keep-aux"],
+            "compile_pdf.py", env=env,
+        )
+        for label, pdf_name in (("xelatex compile", "main.pdf"),
+                                ("xelatex compile (bilingual)", "main_bilingual.pdf")):
+            pdf_out = tmp / pdf_name
+            if pdf_out.is_file() and pdf_out.stat().st_size > 1024:
+                results.append((label, True, f"{label}: OK ({pdf_out.stat().st_size} bytes)"))
+            else:
+                results.append((label, False, msg if not ok else f"no {pdf_name} produced"))
 
         # 7. check_bilingual.py on the two PDFs just built
         if (tmp / "main.pdf").is_file() and (tmp / "main_bilingual.pdf").is_file():

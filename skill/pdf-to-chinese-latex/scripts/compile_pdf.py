@@ -68,18 +68,46 @@ def print_install_help() -> None:
     print("  3. Menu -> Compiler -> XeLaTeX -> Recompile\n")
 
 
+# Fandol ships with TeX Live and is loaded by file name, so it works where the
+# OS font service is unreachable (e.g. inside Codex's sandbox on macOS, where
+# on-demand system fonts such as STHeiti/STKaiti can't be resolved).
+FANDOL_FALLBACK = r"\PassOptionsToPackage{fontset=fandol}{ctex}\PassOptionsToClass{fontset=fandol}{ctexart}"
+
+
+def _xelatex(xelatex: str, project_dir: Path, main_name: str, fandol: bool):
+    args = [xelatex, "-interaction=nonstopmode", "-halt-on-error"]
+    if fandol:
+        args += [f"-jobname={Path(main_name).stem}", FANDOL_FALLBACK + "\\input{" + main_name + "}"]
+    else:
+        args.append(main_name)
+    return subprocess.run(args, cwd=str(project_dir), capture_output=True,
+                          text=True, encoding="utf-8", errors="replace")
+
+
+def _font_missing(project_dir: Path, main_name: str, stdout: str) -> bool:
+    log = project_dir / (Path(main_name).stem + ".log")
+    text = stdout or ""
+    try:
+        text += log.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        pass
+    return "fontspec" in text and "cannot be found" in text
+
+
 def compile_one(project_dir: Path, main_name: str, keep_aux: bool, xelatex: str) -> int:
     main_tex = project_dir / main_name
     if not main_tex.is_file():
         print(f"[ERROR] {main_tex} does not exist")
         return 2
 
+    fandol = False
     print(f"[1/2] xelatex pass 1: {main_tex.name}")
-    r1 = subprocess.run(
-        [xelatex, "-interaction=nonstopmode", "-halt-on-error", main_name],
-        cwd=str(project_dir),
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-    )
+    r1 = _xelatex(xelatex, project_dir, main_name, fandol)
+    if r1.returncode != 0 and _font_missing(project_dir, main_name, r1.stdout):
+        print("[WARN] 系统中文字体加载失败（常见于 Codex 等沙盒环境，系统字体服务不可用），"
+              "改用 TeX Live 自带的 Fandol 字体重新编译。想用系统字体，在沙盒外重新运行本脚本即可。")
+        fandol = True
+        r1 = _xelatex(xelatex, project_dir, main_name, fandol)
     if r1.returncode != 0:
         print(f"[ERROR] pass 1 failed (exit={r1.returncode}). Last lines of stdout:")
         for ln in (r1.stdout or "").splitlines()[-25:]:
@@ -87,11 +115,7 @@ def compile_one(project_dir: Path, main_name: str, keep_aux: bool, xelatex: str)
         return r1.returncode
 
     print("[2/2] xelatex pass 2 (resolve cross-references)")
-    r2 = subprocess.run(
-        [xelatex, "-interaction=nonstopmode", "-halt-on-error", main_name],
-        cwd=str(project_dir),
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-    )
+    r2 = _xelatex(xelatex, project_dir, main_name, fandol)
     if r2.returncode != 0:
         print(f"[ERROR] pass 2 failed (exit={r2.returncode}). Last lines of stdout:")
         for ln in (r2.stdout or "").splitlines()[-25:]:

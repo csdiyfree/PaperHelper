@@ -74,13 +74,23 @@ python scripts/self_check.py
 
 This generates a tiny synthetic PDF in a temp dir, runs the full pipeline (`extract_text` → `render_figures --auto` → minimal `main.tex` → `check_tex` → `xelatex`), and prints PASS / FAIL per stage. Exits 0 if everything works. `xelatex compile` shows SKIP if no TeX install is on PATH — that's only a problem if the user wants local PDF output (Overleaf doesn't need it). Anything FAIL means the skill won't produce correct output on a real paper either — fix the broken dep before triggering the workflow.
 
+## Agents and sandboxes (Claude Code, Codex, …)
+
+This skill works in any agent that loads `SKILL.md` skills (Claude Code: `~/.claude/skills/`, Codex: `~/.codex/skills/`). Run the scripts from this skill's folder with whatever `python3` has the dependencies. Where a step says "ask the user", use the agent's question tool if it has one (Claude Code: `AskUserQuestion`), otherwise ask in chat and wait for the answer.
+
+Agents that run commands in a sandbox (Codex's default `workspace-write`) need three things to know:
+
+- **Writes outside the workspace are blocked.** Step 4's work folder and Step 9's ingest live under `~/PaperHelper`. Best: the user starts the agent in `~/PaperHelper` (`cd ~/PaperHelper && codex`), which makes both writable. Otherwise put the work folder inside the current workspace and run the Step 9 `ingest` with escalated permissions (Codex: request approval to run it outside the sandbox).
+- **System CJK fonts may be unreachable.** macOS's on-demand fonts (STHeiti, STKaiti, PingFang …) load through a system service the sandbox blocks. `compile_pdf.py` detects this and recompiles with TeX Live's bundled Fandol fonts, printing a `[WARN]`. Mention it in the summary; rerunning `compile_pdf.py` outside the sandbox restores the system fonts.
+- **Local network and GUI launches are blocked.** `paperhelper open` / `start` talk to a server on `127.0.0.1:4730` and open a window, so run them with escalated permissions; the user approves once.
+
 ## Workflow (9 steps: translate, compile, file into PaperHelper)
 
 Follow these in order. Each step has a clear stop/check; report progress to the user but don't ask permission between steps unless something genuinely ambiguous comes up.
 
 ### Step 1 — Ask two scoping questions (don't skip)
 
-Before extracting anything, call `AskUserQuestion` with two questions:
+Before extracting anything, ask the user these two questions (Claude Code: one `AskUserQuestion` call with both; other agents: ask in chat and wait). If the user already answered them in their request, don't ask again.
 
 1. **图表处理** (figure/table handling):
    - ① 从原 PDF 抽图嵌入 + 中文标题（推荐）
@@ -304,7 +314,7 @@ The user keeps every translated paper in **PaperHelper**, a local library app (`
        --abstract-zh "<one or two sentence Chinese summary>" --keywords "<k1,k2,k3>"
    ```
    `--authors`: up to three surnames, then `et al.`. `--venue`: short form (NeurIPS, CVPR, Nature, arXiv).
-4. **Open it:** `~/PaperHelper/bin/paperhelper open <id>` — starts the local server if needed and opens the paper in its own window.
+4. **Open it:** `~/PaperHelper/bin/paperhelper open <id>` — starts the local server if needed and opens the paper in its own window. In a sandboxed agent run this one with escalated permissions (see "Agents and sandboxes").
 5. **Clean up:** after a successful ingest, the folder under `~/PaperHelper/work/` can be deleted; the library holds the full copy (`latex/` included).
 
 In the final summary, tell the user the category you chose (and that they can re-file it by asking PaperHelper's assistant), instead of listing file paths.

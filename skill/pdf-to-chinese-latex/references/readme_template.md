@@ -24,7 +24,7 @@ python <skill>/scripts/compile_pdf.py "<output_folder>"
 # 出 Word（需 pandoc）
 python <skill>/scripts/export_docx.py "<output_folder>"
 ```
-其中 `<skill>` 为 skill 安装目录（如 `~/.claude/skills/pdf-to-chinese-latex`）。
+其中 `<skill>` 为 skill 安装目录（Claude Code：`~/.claude/skills/pdf-to-chinese-latex`；Codex：`~/.codex/skills/pdf-to-chinese-latex`）。
 
 手动编译亦可（TeX Live 2020+ 或 MikTeX 22+）：
 ```powershell

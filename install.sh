@@ -13,12 +13,17 @@ python3 -c 'import fitz' 2>/dev/null || echo "提示：入库时提取文字需�
 chmod +x "$ROOT/bin/paperhelper" "$ROOT/macos/build-app.sh"
 mkdir -p "$ROOT/library" "$ROOT/work"
 
-# Claude Code skill (keeps any local .git / .venv / evals in the installed copy)
-SKILL="$HOME/.claude/skills/pdf-to-chinese-latex"
-mkdir -p "$SKILL"
-rsync -a --delete --exclude .git --exclude .venv --exclude evals \
-  "$ROOT/skill/pdf-to-chinese-latex/" "$SKILL/"
-echo "已安装 skill 到 $SKILL"
+# Translation skill for Claude Code and/or Codex (keeps any local .git / .venv / evals)
+TARGETS=()
+{ [ -d "$HOME/.claude" ] || command -v claude >/dev/null 2>&1; } && TARGETS+=("$HOME/.claude/skills")
+{ [ -d "$HOME/.codex" ] || command -v codex >/dev/null 2>&1; } && TARGETS+=("$HOME/.codex/skills")
+[ ${#TARGETS[@]} -eq 0 ] && TARGETS+=("$HOME/.claude/skills")   # neither found yet: default to Claude Code
+for dir in "${TARGETS[@]}"; do
+  mkdir -p "$dir/pdf-to-chinese-latex"
+  rsync -a --delete --exclude .git --exclude .venv --exclude evals \
+    "$ROOT/skill/pdf-to-chinese-latex/" "$dir/pdf-to-chinese-latex/"
+  echo "已安装 skill 到 $dir/pdf-to-chinese-latex"
+done
 
 "$ROOT/macos/build-app.sh"
 echo "完成。打开「PaperHelper」（~/Applications），或运行：$ROOT/bin/paperhelper open"

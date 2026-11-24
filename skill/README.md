@@ -1,8 +1,8 @@
 # skill/pdf-to-chinese-latex
 
-Claude Code skill：把外文论文 PDF 翻译成中文 LaTeX 译稿，同时编出**中文版**和**中英对照版**两个 PDF，最后自动归类存进 PaperHelper 并打开。
+Claude Code / Codex 通用的 skill：把外文论文 PDF 翻译成中文 LaTeX 译稿，同时编出**中文版**和**中英对照版**两个 PDF，最后自动归类存进 PaperHelper 并打开。
 
-`install.sh` 会把它同步到 `~/.claude/skills/pdf-to-chinese-latex`。
+`install.sh` 会把它同步到 `~/.claude/skills/pdf-to-chinese-latex` 和 `~/.codex/skills/pdf-to-chinese-latex`（取决于装了哪个工具）。
 
 ## 来源
 
@@ -15,4 +15,5 @@ Claude Code skill：把外文论文 PDF 翻译成中文 LaTeX 译稿，同时编
 - **`scripts/check_bilingual.py`**：编译后核对每一对原文 / 译文是否都正确出现在两个 PDF 里。
 - **`compile_pdf.py`** 同时编译两个版本；`self_check.py` 增加对照版编译与核对。
 - **Step 9**：翻译完成后用 `~/PaperHelper/bin/paperhelper` 选分类、入库、打开。
+- **兼容 Codex**：提问不再依赖 Claude Code 的 `AskUserQuestion`；`SKILL.md` 增加了沙盒说明；`compile_pdf.py` 在系统字体不可用时（如 Codex 沙盒）自动改用 Fandol 字体重编。
 - 没有包含上游的 `evals/`（测试用 PDF），需要请到上游仓库获取。
