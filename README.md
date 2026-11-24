@@ -23,12 +23,17 @@ git clone https://github.com/csdiyfree/PaperHelper.git ~/PaperHelper
 ~/PaperHelper/install.sh
 ```
 
-`install.sh` 会做三件事：
+`install.sh` 会做四件事：
 1. 生成 `~/Applications/PaperHelper.app`，可以从启动台或 Spotlight 打开；
 2. 把翻译 skill 安装到 `~/.claude/skills/`（Claude Code）和 `~/.codex/skills/`（Codex），装了哪个就装到哪个；
-3. 检查 Python 环境。入库时提取论文文字需要 PyMuPDF（`python3 -m pip install PyMuPDF`）。
+3. 把示例论文《Mistral 7B》放进论文库的「示例」分类，打开就能看到中文版、对照版和一份上手笔记；
+4. 检查 Python 环境。入库时提取论文文字需要 PyMuPDF（`python3 -m pip install PyMuPDF`）。
 
 第一次打开后，点左下角的齿轮（或按 `⌘,`）填入 DeepSeek API key。key 只保存在本机的 `~/PaperHelper/config.json`。
+
+## 示例论文
+
+仓库自带一篇完整翻译好的示例：[*Mistral 7B*](https://arxiv.org/abs/2310.06825)（Jiang et al., 2023），放在 `examples/jiang2023-mistral7b/`，包含原文、中文版、中英对照版和译稿 LaTeX 源码。它是用本仓库的翻译 skill 完整跑一遍得到的，可以直接看出翻译和排版效果。原文以 CC BY 4.0 授权，译文同样以 CC BY 4.0 发布，署名和改动说明见 [examples/README.md](examples/README.md)。
 
 ## 使用
 
@@ -62,6 +67,7 @@ macos/build-app.sh   生成 PaperHelper.app
 skill/               翻译 skill，Claude Code 和 Codex 通用（见 skill/README.md）
 DESIGN.md            接口与数据格式约定
 AGENTS.md            给 Codex / Claude Code 的项目说明（CLAUDE.md 引用它）
+examples/            自带的示例论文（CC BY 4.0），首次安装时复制进论文库
 library/             你的论文（不进 git）
 config.json          API key（不进 git）
 ```
@@ -75,4 +81,4 @@ config.json          API key（不进 git）
 
 ## 许可证
 
-[MIT](LICENSE)
+代码以 [MIT](LICENSE) 许可发布。`examples/` 下的示例论文及其译文不适用 MIT，以 CC BY 4.0 授权，详见 [examples/README.md](examples/README.md)。

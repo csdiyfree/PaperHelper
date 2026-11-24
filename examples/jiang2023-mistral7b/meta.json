@@ -1,0 +1,20 @@
+{
+  "id": "jiang2023-mistral7b",
+  "title_zh": "Mistral 7B",
+  "title_en": "Mistral 7B",
+  "authors": "Jiang, Sablayrolles, Mensch, et al.",
+  "venue": "arXiv",
+  "year": 2023,
+  "pages": 9,
+  "added": "2026-11-24",
+  "abstract_zh": "Mistral 7B 是一个 70 亿参数的语言模型，借助分组查询注意力（GQA）和滑动窗口注意力（SWA）实现更快、更省内存的推理，在全部评测基准上超过 Llama 2 13B，并在推理、数学和代码生成上超过 Llama 1 34B；其指令微调版本 Mistral 7B – Instruct 在人工与自动评测中均优于 Llama 2 13B – Chat。",
+  "keywords": [
+    "大语言模型",
+    "分组查询注意力",
+    "滑动窗口注意力",
+    "滚动缓冲区缓存",
+    "指令微调"
+  ],
+  "source": "https://arxiv.org/abs/2310.06825",
+  "license": "CC BY 4.0（原文与中文译文），见 examples/README.md"
+}

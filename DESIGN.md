@@ -14,7 +14,9 @@ Frontend and backend are built against this file; change it first if the contrac
 │   └── web/             # frontend (index.html, app.css, app.js, icon.svg, vendor/)
 ├── bin/paperhelper      # CLI (python3 script)
 ├── macos/build-app.sh   # builds ~/Applications/PaperHelper.app
-├── skill/pdf-to-chinese-latex/   # Claude Code skill; install.sh syncs it to ~/.claude/skills/
+├── skill/pdf-to-chinese-latex/   # translation skill; install.sh syncs it to ~/.claude/skills/ and ~/.codex/skills/
+├── examples/<id>/       # built-in example papers (CC BY), same layout as a paper folder; install.sh copies each
+│                        #   into library/示例/ once and records the id in .installed-examples *
 ├── docs/                # README images
 ├── config.json        * # {"deepseek_api_key": "...", "model": "deepseek-chat"}  chmod 600, never logged
 ├── library/<分类>/<paper-id>/ *  # one folder per paper; category = parent folder name
@@ -30,7 +32,7 @@ Python: `python3` ≥ 3.9 from `PATH` (`#!/usr/bin/env python3`; the launcher ap
 
 | file | notes |
 |---|---|
-| `meta.json` | `{id, title_zh, title_en, authors, venue, year, pages, added, abstract_zh?, keywords?}` — `authors` is one display string, `year`/`pages` ints, `added` = `YYYY-MM-DD`, `pages` = page count of original |
+| `meta.json` | `{id, title_zh, title_en, authors, venue, year, pages, added, abstract_zh?, keywords?, source?, license?}` — `authors` is one display string, `year`/`pages` ints, `added` = `YYYY-MM-DD`, `pages` = page count of original; `source` (URL) and `license` are set on example papers |
 | `original.pdf`, `zh.pdf`, `bilingual.pdf` | any may be missing; the frontend disables missing modes |
 | `notes.md` | always exists (may be empty). Plain Markdown, written by the user, by DeepSeek (via tools) and by Claude |
 | `text/original.txt`, `text/zh.txt` | plain text extracted at ingest, pages delimited by lines `=== 第 N 页 ===` |

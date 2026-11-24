@@ -11,7 +11,24 @@ python3 -c 'import sys; sys.exit(sys.version_info < (3, 9))' || { echo "需要 P
 python3 -c 'import fitz' 2>/dev/null || echo "提示：入库时提取文字需要 PyMuPDF：python3 -m pip install PyMuPDF" >&2
 
 chmod +x "$ROOT/bin/paperhelper" "$ROOT/macos/build-app.sh"
-mkdir -p "$ROOT/library" "$ROOT/work"
+PH_HOME="${PAPERHELPER_HOME:-$HOME/PaperHelper}"
+mkdir -p "$PH_HOME/library" "$PH_HOME/work"
+
+# Built-in example papers (examples/<id>/): copied into the library once.
+# Recorded in .installed-examples so a deleted example isn't brought back.
+MARK="$PH_HOME/.installed-examples"
+touch "$MARK"
+for ex in "$ROOT"/examples/*/; do
+  [ -f "$ex/meta.json" ] || continue
+  id="$(basename "$ex")"
+  grep -qxF "$id" "$MARK" && continue
+  if ! compgen -G "$PH_HOME/library/*/$id" >/dev/null; then
+    mkdir -p "$PH_HOME/library/示例"
+    cp -R "$ex" "$PH_HOME/library/示例/$id"
+    echo "已加入示例论文：$id（分类「示例」）"
+  fi
+  echo "$id" >> "$MARK"
+done
 
 # Translation skill for Claude Code and/or Codex (keeps any local .git / .venv / evals)
 TARGETS=()
